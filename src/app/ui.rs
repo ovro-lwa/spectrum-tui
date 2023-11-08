@@ -88,16 +88,12 @@ fn draw_help<'a>() -> Table<'a> {
 
     let rows = vec![
         Row::new(vec![
-            Cell::from(Span::styled("<Esc>", key_style)),
+            Cell::from(Span::styled("<Esc>/q", key_style)),
             Cell::from(Span::styled("Quit", help_style)),
         ]),
         Row::new(vec![
-            Cell::from(Span::styled("<c>", key_style)),
-            Cell::from(Span::styled("Find Cursor", help_style)),
-        ]),
-        Row::new(vec![
-            Cell::from(Span::styled("<Cntrl+c>", key_style)),
-            Cell::from(Span::styled("Spicy Find Cursor", help_style)),
+            Cell::from(Span::styled("n", key_style)),
+            Cell::from(Span::styled("New Antenna", help_style)),
         ]),
     ];
 
@@ -122,12 +118,12 @@ fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
             .zip(specs.ant_names.iter())
             .enumerate()
             .map(|(cnt, (x, name))| {
+                let fraction = ((cnt + 1) as f32 / n_spectra as f32) * 255.0;
+
                 Dataset::default()
                     .name(name)
                     .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(Color::Indexed(
-                        ((cnt as f32 / n_spectra as f32) * (cnt + 1) as f32) as u8 % 255_u8,
-                    )))
+                    .style(Style::default().fg(Color::Indexed(fraction as u8)))
                     .graph_type(GraphType::Line)
                     .data(x.as_slice())
             })

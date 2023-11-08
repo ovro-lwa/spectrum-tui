@@ -1,8 +1,8 @@
-use std::{io, pin::Pin, time::Duration};
+use std::{io, path::PathBuf, pin::Pin, time::Duration};
 
 use anyhow::Result;
 use async_stream::stream;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
@@ -25,7 +25,7 @@ use app::ui::draw;
 mod loader;
 use loader::SpectrumLoader;
 
-use crate::loader::EtcdLoader;
+use crate::loader::{DiskLoader, EtcdLoader};
 
 enum Action {
     Break,
@@ -44,6 +44,12 @@ impl Action {
             }) => Some(Self::NewAnt),
             Event::Key(KeyEvent {
                 code: KeyCode::Esc,
+                modifiers: KeyModifiers::NONE,
+                kind: _,
+                state: _,
+            })
+            | Event::Key(KeyEvent {
+                code: KeyCode::Char('q'),
                 modifiers: KeyModifiers::NONE,
                 kind: _,
                 state: _,
@@ -73,18 +79,38 @@ fn print_events(event: Result<Option<Action>, io::Error>) -> io::Result<Option<A
     }
 }
 
+#[derive(Subcommand)]
+enum TuiType {
+    #[clap(arg_required_else_help = true)]
+    /// Plot spectra from an RFIMonitorTool output npy file
+    File {
+        #[clap(short = 'n', required = true)]
+        /// The number of antenna spectra to load
+        nspectra: usize,
+        #[clap()]
+        /// Numpy save file from the RFIMonitor
+        input_file: PathBuf,
+    },
+    #[clap(arg_required_else_help = true)]
+    /// Watch live autospectra from the correlator
+    Live {
+        #[clap( num_args = 1.., value_delimiter = ' ')]
+        /// The Antenna Name to grab autos
+        /// This should be a string like LWA-250
+        /// This antenna name is matched against the configuration name exactly.
+        antenna: Vec<String>,
+
+        #[clap(long, short, default_value_t = 30)]
+        /// The interval in seconds at which to poll for new autos
+        delay: u64,
+    },
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
-    #[clap(long, short)]
-    /// The Antenna Name to grab autos
-    /// This should be a string like LWA-250
-    /// This antenna name is matched against the configuration name exactly.
-    antenna: String,
-
-    #[clap(long, short, default_value_t = 30)]
-    /// The interval in seconds at which to poll for new autos
-    delay: u64,
+    #[clap(subcommand)]
+    tv_type: TuiType,
 }
 
 #[tokio::main]
@@ -104,18 +130,30 @@ async fn main() -> Result<(), io::Error> {
     let (sender, mut recvr) = tokio::sync::mpsc::channel(30);
 
     tokio::spawn(async move {
-        let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
-        data_loader.filter_antenna(cli.antenna)?;
-
-        let mut interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-            Duration::from_secs(cli.delay),
-        ));
-
-        while let Some(_tick) = interval.next().await {
-            if let Some(spec) = data_loader.get_data().await {
-                sender.send(spec).await?;
+        match cli.tv_type {
+            TuiType::File {
+                nspectra,
+                input_file,
+            } => {
+                let mut data_loader = DiskLoader::new(nspectra, input_file);
+                if let Some(spec) = data_loader.get_data().await {
+                    sender.send(spec).await?;
+                }
             }
-        }
+            TuiType::Live { antenna, delay } => {
+                let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
+                data_loader.filter_antenna(antenna)?;
+                let mut interval = tokio_stream::wrappers::IntervalStream::new(
+                    tokio::time::interval(Duration::from_secs(delay)),
+                );
+
+                while let Some(_tick) = interval.next().await {
+                    if let Some(spec) = data_loader.get_data().await {
+                        sender.send(spec).await?;
+                    }
+                }
+            }
+        };
         Ok::<(), anyhow::Error>(())
     });
 

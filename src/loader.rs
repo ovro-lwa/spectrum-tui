@@ -1,11 +1,12 @@
-use std::{collections::HashSet, time::SystemTime};
+use std::{collections::HashSet, path::PathBuf, time::SystemTime};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use etcd_client::{Client, WatchOptions};
 use futures::StreamExt;
+use itertools::Itertools;
 use log::info;
-use ndarray::{Array, Ix2, Zip};
+use ndarray::{concatenate, Array, Axis, Ix2, Zip};
 use ndarray_npy::read_npy;
 
 use serde_json::{json, Value};
@@ -25,12 +26,19 @@ pub trait SpectrumLoader {
     async fn get_data(&mut self) -> Option<AutoSpectra>;
 }
 
-pub(crate) struct DiskLoader {}
+pub(crate) struct DiskLoader {
+    n_spectra: usize,
+    file: PathBuf,
+}
+impl DiskLoader {
+    pub fn new(n_spectra: usize, file: PathBuf) -> Self {
+        Self { n_spectra, file }
+    }
+}
 #[async_trait]
 impl SpectrumLoader for DiskLoader {
     async fn get_data(&mut self) -> Option<AutoSpectra> {
-        let data: Array<f64, Ix2> =
-            read_npy("/home/matthew/2023-05-11_18:01:15.npy").expect("unabe to read.");
+        let data: Array<f64, Ix2> = read_npy(&self.file).expect("unabe to read.");
 
         let len = data.shape()[1];
         let xs = Array::linspace(0.0, 98.3, len);
@@ -39,7 +47,7 @@ impl SpectrumLoader for DiskLoader {
         let spectra = data
             .outer_iter()
             .filter(|inner| !inner.iter().all(|y| y.is_nan()))
-            .take(4)
+            .take(2 * self.n_spectra)
             .map(|inner| {
                 Zip::from(inner)
                     .and(&xs)
@@ -47,7 +55,12 @@ impl SpectrumLoader for DiskLoader {
                     .to_vec()
             })
             .collect::<Vec<_>>();
-        let ant_names = (0..4).map(|x| x.to_string() + "A").collect::<Vec<_>>();
+        let ant_names = (0..(2 * self.n_spectra))
+            .map(|x| match x % 2 == 0 {
+                true => (x / 2).to_string() + "A",
+                false => (x / 2).to_string() + "B",
+            })
+            .collect::<Vec<_>>();
 
         let data = AutoSpectra {
             freq_min: xmin,
@@ -70,6 +83,22 @@ struct AntInfo {
     pola_fpga_num: i64,
     polb_fpga_num: i64,
 }
+impl core::cmp::PartialEq for AntInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.snap2_location == other.snap2_location
+    }
+}
+impl core::cmp::Eq for AntInfo {}
+impl core::cmp::PartialOrd for AntInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.snap2_location.cmp(&other.snap2_location))
+    }
+}
+impl core::cmp::Ord for AntInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.snap2_location.cmp(&other.snap2_location)
+    }
+}
 
 pub(crate) struct EtcdLoader {
     /// etcd3 client to communicate with correlator
@@ -78,7 +107,7 @@ pub(crate) struct EtcdLoader {
     ant_info: Vec<AntInfo>,
     /// Antenna Filter to apply on FGPA call
     /// Filter consists of [Antenna Number, FPGA number, polA index, polB index]
-    filter: Option<AntInfo>,
+    filter: Option<Vec<AntInfo>>,
 }
 impl EtcdLoader {
     pub async fn new<T: AsRef<str>>(address: T) -> Result<Self> {
@@ -170,22 +199,40 @@ impl EtcdLoader {
         })
     }
 
-    pub fn filter_antenna(&mut self, antenna_number: String) -> Result<()> {
-        self.filter = self
-            .ant_info
+    pub fn filter_antenna(&mut self, antenna_number: Vec<String>) -> Result<()> {
+        self.filter = antenna_number
             .iter()
-            .find(|info| info.antname == antenna_number)
-            .cloned();
+            .map(|ant| {
+                self.ant_info
+                    .iter()
+                    .find(|info| info.antname == *ant)
+                    .cloned()
+            })
+            // this sorts them by snap location
+            .sorted()
+            .collect();
 
         Ok(())
     }
 
-    pub async fn request_autos(&mut self) -> Result<Array<f64, Ix2>> {
-        let cmd_key = self
-            .filter
+    fn get_snaps(&self) -> Option<Vec<i64>> {
+        self.filter.as_ref().map(|ants| {
+            ants.iter()
+                .map(|a| a.snap2_location)
+                .unique()
+                .sorted()
+                .collect()
+        })
+    }
+
+    async fn get_spectra_for_snap(
+        &mut self,
+        snap_location: Option<i64>,
+    ) -> Result<Array<f64, Ix2>> {
+        let cmd_key = snap_location
             .as_ref()
             .map_or(format!("{ETCD_CMD_ROOT}0"), |info| {
-                format!("{ETCD_CMD_ROOT}{:0>2}", info.snap2_location)
+                format!("{ETCD_CMD_ROOT}{:0>2}", info)
             });
         let mut spectra = Array::<f64, Ix2>::zeros((64, 4096));
 
@@ -251,24 +298,44 @@ impl EtcdLoader {
                 }
             }
         }
-        if let Some(info) = self.filter.as_ref() {
-            let axes = [info.pola_fpga_num as usize, info.polb_fpga_num as usize];
-            spectra = Array::from_iter(
-                spectra
-                    .outer_iter()
-                    .enumerate()
-                    .filter_map(|(cnt, ax)| {
-                        if axes.contains(&cnt) {
-                            Some(ax.to_vec())
-                        } else {
-                            None
-                        }
-                    })
-                    .flatten(),
-            )
-            .into_shape((2, 4096))?;
-        }
         Ok(spectra)
+    }
+
+    pub async fn request_autos(&mut self) -> Result<Array<f64, Ix2>> {
+        if let Some(snaps) = self.get_snaps() {
+            let mut all_sectra = Array::zeros((0, 4096));
+
+            for snap in snaps {
+                let mut spectra = self.get_spectra_for_snap(Some(snap)).await?;
+
+                if let Some(all_info) = self.filter.as_ref() {
+                    let mut axes = vec![];
+                    for info in all_info {
+                        if info.snap2_location == snap {
+                            axes.extend([info.pola_fpga_num as usize, info.polb_fpga_num as usize]);
+                        }
+                    }
+                    spectra = Array::from_iter(
+                        spectra
+                            .outer_iter()
+                            .enumerate()
+                            .filter_map(|(cnt, ax)| {
+                                if axes.contains(&cnt) {
+                                    Some(ax.to_vec())
+                                } else {
+                                    None
+                                }
+                            })
+                            .flatten(),
+                    )
+                    .into_shape((2, 4096))?;
+                    all_sectra = concatenate![Axis(0), all_sectra.view(), spectra.view()];
+                }
+            }
+            Ok(all_sectra)
+        } else {
+            Ok(self.get_spectra_for_snap(None).await?)
+        }
     }
 }
 #[async_trait]
@@ -291,8 +358,11 @@ impl SpectrumLoader for EtcdLoader {
             })
             .collect::<Vec<_>>();
 
-        let ant_names = if let Some(info) = self.filter.as_ref() {
-            vec![format!("{}a", info.antname), format!("{}b", info.antname)]
+        let ant_names = if let Some(all_info) = self.filter.as_ref() {
+            all_info
+                .iter()
+                .flat_map(|info| [format!("{}a", info.antname), format!("{}b", info.antname)])
+                .collect()
         } else {
             (0..spectra.len()).map(|x| format!("{x}")).collect()
         };

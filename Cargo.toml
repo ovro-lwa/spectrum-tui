@@ -21,6 +21,7 @@ tokio = { version = "1.27.0", features = ["full"] }
 tokio-stream = "0.1.14"
 ratatui = "0.20.0"
 tui-logger = { version = "0.9.1", default-features = false, features = ["ratatui-support"] }
+itertools = "0.11.0"
 
 
 [profile.release]
