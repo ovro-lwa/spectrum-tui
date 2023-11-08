@@ -95,9 +95,13 @@ enum TuiType {
     /// Watch live autospectra from the correlator
     Live {
         #[clap( num_args = 1.., value_delimiter = ' ')]
-        /// The Antenna Name to grab autos
-        /// This should be a string like LWA-250
+        /// The Antenna Name(s) to grab autos
+        ///
+        /// This should be a string like LWA-250.
+        ///
         /// This antenna name is matched against the configuration name exactly.
+        ///
+        /// This can also be a space separated list of antennas: LWA-124 LWA-250 ...etc
         antenna: Vec<String>,
 
         #[clap(long, short, default_value_t = 30)]
