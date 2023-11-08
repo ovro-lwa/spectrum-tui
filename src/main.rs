@@ -4,7 +4,6 @@ use anyhow::Result;
 use async_stream::stream;
 use clap::Parser;
 use crossterm::{
-    cursor::position,
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
         KeyModifiers,
@@ -14,7 +13,7 @@ use crossterm::{
 };
 use futures::StreamExt;
 use loader::AutoSpectra;
-use log::{error, info, trace, warn, LevelFilter};
+use log::{error, info, trace, LevelFilter};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::time::Instant;
 use tokio_stream::Stream;
@@ -30,9 +29,7 @@ use crate::loader::EtcdLoader;
 
 enum Action {
     Break,
-    Cursor,
-    RedCursor,
-    Print(char),
+    NewAnt,
 }
 impl Action {
     pub fn from_event(event: Event) -> Option<Self> {
@@ -40,23 +37,11 @@ impl Action {
 
         match event {
             Event::Key(KeyEvent {
-                code: KeyCode::Char('c'),
+                code: KeyCode::Char('n'),
                 modifiers: KeyModifiers::NONE,
                 kind: _,
                 state: _,
-            }) => Some(Self::Cursor),
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('c'),
-                modifiers: KeyModifiers::CONTROL,
-                kind: _,
-                state: _,
-            }) => Some(Self::RedCursor),
-            Event::Key(KeyEvent {
-                code: KeyCode::Char(char),
-                modifiers: KeyModifiers::NONE,
-                kind: _,
-                state: _,
-            }) => Some(Self::Print(char)),
+            }) => Some(Self::NewAnt),
             Event::Key(KeyEvent {
                 code: KeyCode::Esc,
                 modifiers: KeyModifiers::NONE,
@@ -77,18 +62,7 @@ enum StreamReturn {
 fn print_events(event: Result<Option<Action>, io::Error>) -> io::Result<Option<Action>> {
     match event {
         Ok(Some(action)) => match action {
-            Action::Cursor => {
-                info!("Cursor position: {:?}\r", position());
-                Ok(None)
-            }
-            Action::RedCursor => {
-                error!("Cursor position: {:?}\r", position());
-                Ok(None)
-            }
-            Action::Print(char) => {
-                warn!("Teehee you pressed {char:}");
-                Ok(None)
-            }
+            Action::NewAnt => Ok(None),
             Action::Break => Ok(Some(Action::Break)),
         },
         Err(err) => {
