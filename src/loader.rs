@@ -307,28 +307,3 @@ impl SpectrumLoader for EtcdLoader {
         Some(data)
     }
 }
-// impl EtcdLoader {
-//     pub(crate) fn aggregate_response(
-//         &self,
-//         cmd_id: i64,
-//         response: WatchResponse,
-//     ) -> Option<AutoSpectra> {
-//         match response.watch_id() == cmd_id {
-//             false => None,
-//             true => {}
-//         }
-//     }
-// }
-
-// Json-ify command object
-// all antenna:
-//     fid: 0, 11 responses expected
-// PUT to cmd_key = ETCD_CMD_ROOT + "%.1d" % fid
-
-// watch the response key, wait for a timeout or 11 responses.
-// track the time we wait and return what we got by the timeout?
-// retrieve the values from json dict
-
-// assign antenna numbers
-
-// return autospectra
