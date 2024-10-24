@@ -1,20 +1,18 @@
 use ndarray::Array;
 use ratatui::{
-    backend::Backend,
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::Span,
     widgets::{
         Axis, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table,
     },
-    Frame,
 };
 use tui_logger::TuiLoggerWidget;
 
 use crate::loader::AutoSpectra;
 
-fn draw_title<'a>() -> Paragraph<'a> {
+pub(crate) fn draw_title<'a>() -> Paragraph<'a> {
     Paragraph::new("Spectrum Tui!!")
         .style(Style::default().fg(Color::LightCyan))
         .alignment(Alignment::Center)
@@ -26,47 +24,7 @@ fn draw_title<'a>() -> Paragraph<'a> {
         )
 }
 
-// pub fn draw<B>(rect: &mut Frame<B>, data: &[Vec<(f64, f64)>], xmin: f64, xmax: f64)
-pub fn draw<B>(rect: &mut Frame<B>, data: Option<&AutoSpectra>)
-where
-    B: Backend,
-{
-    let size = rect.size();
-
-    // Vertical layout
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Min(3),
-                Constraint::Percentage(80),
-                Constraint::Percentage(20),
-            ]
-            .as_ref(),
-        )
-        .split(size);
-
-    // Title
-    let title = draw_title();
-    rect.render_widget(title, chunks[0]);
-
-    let charts = draw_charts(data);
-    rect.render_widget(charts, chunks[1]);
-
-    // Logs
-    let logs = draw_logs();
-    let help = draw_help();
-    // Body & Help
-    let log_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(80), Constraint::Min(20)].as_ref())
-        .split(chunks[2]);
-
-    rect.render_widget(logs, log_chunks[0]);
-    rect.render_widget(help, log_chunks[1]);
-}
-
-fn draw_logs<'a>() -> TuiLoggerWidget<'a> {
+pub(crate) fn draw_logs<'a>() -> TuiLoggerWidget<'a> {
     TuiLoggerWidget::default()
         .style_error(Style::default().fg(Color::Red))
         .style_debug(Style::default().fg(Color::Green))
@@ -82,7 +40,7 @@ fn draw_logs<'a>() -> TuiLoggerWidget<'a> {
         .style(Style::default().fg(Color::White).bg(Color::Black))
 }
 
-fn draw_help<'a>() -> Table<'a> {
+pub(crate) fn draw_help<'a>() -> Table<'a> {
     let key_style = Style::default().fg(Color::LightCyan);
     let help_style = Style::default().fg(Color::Gray);
 
@@ -108,8 +66,7 @@ fn draw_help<'a>() -> Table<'a> {
         .column_spacing(1)
 }
 
-// fn draw_charts(data: &[Vec<(f64, f64)>], xmin: f64, xmax: f64) -> Chart {
-fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
+pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
     let datasets = data.map_or(vec![], |specs| {
         let n_spectra = specs.spectra.len();
         specs
@@ -168,4 +125,31 @@ fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
                         .collect::<Vec<_>>(),
                 ),
         )
+}
+
+/// helper function to create a centered rect using up certain percentage of the available rect `r`
+pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(popup_layout[1])[1]
 }

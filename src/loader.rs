@@ -199,7 +199,7 @@ impl EtcdLoader {
         })
     }
 
-    pub fn filter_antenna(&mut self, antenna_number: Vec<String>) -> Result<()> {
+    pub fn filter_antenna(&mut self, antenna_number: &[String]) -> Result<()> {
         self.filter = antenna_number
             .iter()
             .map(|ant| {

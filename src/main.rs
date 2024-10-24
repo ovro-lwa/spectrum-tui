@@ -1,85 +1,54 @@
-use std::{io, path::PathBuf, pin::Pin, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 
 use anyhow::Result;
-use async_stream::stream;
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyModifiers,
-    },
+    event::{EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{enable_raw_mode, EnterAlternateScreen},
 };
-use futures::StreamExt;
-use loader::AutoSpectra;
-use log::{error, info, trace, LevelFilter};
+use log::{trace, LevelFilter};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use tokio::time::Instant;
-use tokio_stream::Stream;
 use tui_logger::{init_logger, set_default_level};
 
 mod app;
-use app::ui::draw;
+use app::App;
 
 mod loader;
-use loader::SpectrumLoader;
-
-use crate::loader::{DiskLoader, EtcdLoader};
 
 enum Action {
     Break,
     NewAnt,
 }
 impl Action {
-    pub fn from_event(event: Event) -> Option<Self> {
+    pub fn from_event(event: KeyEvent) -> Option<Self> {
         trace!("Event::{:?}\r", event);
 
         match event {
-            Event::Key(KeyEvent {
+            KeyEvent {
                 code: KeyCode::Char('n'),
                 modifiers: KeyModifiers::NONE,
                 kind: _,
                 state: _,
-            }) => Some(Self::NewAnt),
-            Event::Key(KeyEvent {
+            } => Some(Self::NewAnt),
+            KeyEvent {
                 code: KeyCode::Esc,
                 modifiers: KeyModifiers::NONE,
                 kind: _,
                 state: _,
-            })
-            | Event::Key(KeyEvent {
+            }
+            | KeyEvent {
                 code: KeyCode::Char('q'),
-                modifiers: KeyModifiers::NONE,
+                modifiers: _,
                 kind: _,
                 state: _,
-            }) => Some(Self::Break),
+            } => Some(Self::Break),
             _ => None,
         }
     }
 }
 
-enum StreamReturn {
-    Action(Result<Option<Action>, io::Error>),
-    Data(AutoSpectra),
-    Tick(Instant),
-}
-
-fn print_events(event: Result<Option<Action>, io::Error>) -> io::Result<Option<Action>> {
-    match event {
-        Ok(Some(action)) => match action {
-            Action::NewAnt => Ok(None),
-            Action::Break => Ok(Some(Action::Break)),
-        },
-        Err(err) => {
-            error!("Error: {:?}\r", err);
-            Ok(None)
-        }
-        _ => Ok(None),
-    }
-}
-
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand, Clone)]
 enum TuiType {
     #[clap(arg_required_else_help = true)]
     /// Plot spectra from an RFIMonitorTool output npy file
@@ -118,7 +87,7 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), io::Error> {
+async fn main() -> Result<()> {
     init_logger(LevelFilter::Trace).unwrap();
     set_default_level(LevelFilter::Info);
 
@@ -129,93 +98,10 @@ async fn main() -> Result<(), io::Error> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let terminal = Terminal::new(backend)?;
 
-    let (sender, mut recvr) = tokio::sync::mpsc::channel(30);
-
-    tokio::spawn(async move {
-        match cli.tv_type {
-            TuiType::File {
-                nspectra,
-                input_file,
-            } => {
-                let mut data_loader = DiskLoader::new(nspectra, input_file);
-                if let Some(spec) = data_loader.get_data().await {
-                    sender.send(spec).await?;
-                }
-            }
-            TuiType::Live { antenna, delay } => {
-                let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
-                data_loader.filter_antenna(antenna)?;
-                let mut interval = tokio_stream::wrappers::IntervalStream::new(
-                    tokio::time::interval(Duration::from_secs(delay)),
-                );
-
-                while let Some(_tick) = interval.next().await {
-                    if let Some(spec) = data_loader.get_data().await {
-                        sender.send(spec).await?;
-                    }
-                }
-            }
-        };
-        Ok::<(), anyhow::Error>(())
-    });
-
-    let data_stream = Box::pin(
-        stream! {
-            while let Some(data) = recvr.recv().await{
-                yield data
-            }
-        }
-        .map(StreamReturn::Data),
-    ) as Pin<Box<dyn Stream<Item = StreamReturn> + Send>>;
-
-    let tick_stream = {
-        let mut tmp = tokio::time::interval(Duration::from_millis(100));
-
-        tmp.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        Box::pin(tokio_stream::wrappers::IntervalStream::new(tmp).map(StreamReturn::Tick))
-    } as Pin<Box<dyn Stream<Item = StreamReturn> + Send>>;
-
-    let reader = EventStream::new()
-        .map(|e| e.map(Action::from_event))
-        .map(StreamReturn::Action);
-    let reader = Box::pin(reader) as Pin<Box<dyn Stream<Item = StreamReturn> + Send>>;
-
-    let mut stream = tokio_stream::StreamMap::new();
-
-    stream.insert("input", reader);
-    stream.insert("data", data_stream);
-    stream.insert("tick", tick_stream);
-
-    let mut spectra: Option<AutoSpectra> = None;
-
-    while let Some((_key, event)) = stream.next().await {
-        match event {
-            StreamReturn::Action(inner_event) => {
-                if let Some(Action::Break) = print_events(inner_event)? {
-                    break;
-                }
-            }
-            StreamReturn::Data(data) => {
-                info!("Received New autosprectra.");
-                let _ = spectra.insert(data);
-            }
-            StreamReturn::Tick(_) => {}
-        }
-
-        terminal.draw(|frame| draw(frame, spectra.as_ref()))?;
-    }
-
-    // restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    let app = App::new(Duration::from_millis(100), cli.tv_type);
+    app.run(terminal).await?;
 
     Ok(())
 }
