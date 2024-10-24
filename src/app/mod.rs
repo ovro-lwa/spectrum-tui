@@ -16,7 +16,8 @@ use log::info;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
-    widgets::{Block, Borders, Clear},
+    style::Style,
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -115,12 +116,25 @@ impl App {
         frame.render_widget(ui::draw_help(), log_chunks[1]);
 
         if self.input_mode == InputMode::AntennaInput {
-            let block = Block::default()
-                .title("Enter Antenna Name")
-                .borders(Borders::ALL);
+            let input = Paragraph::new(self.input.as_str())
+                .style(Style::default())
+                .block(
+                    Block::default()
+                        .title("Enter Antenna Name")
+                        .borders(Borders::ALL),
+                );
+
             let area = ui::centered_rect(60, 20, size);
             frame.render_widget(Clear, area); //this clears out the background
-            frame.render_widget(block, area);
+            frame.render_widget(input, area);
+
+            frame.set_cursor(
+                // Draw the cursor at the current position in the input field.
+                // This position is can be controlled via the left and right arrow key
+                area.x + self.character_index as u16 + 1,
+                // Move one line down, from the border to the input line
+                area.y + 1,
+            );
         }
     }
 
