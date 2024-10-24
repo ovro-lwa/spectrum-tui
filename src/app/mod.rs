@@ -356,6 +356,10 @@ impl App {
                 .await?;
         }
 
+        // reset the list state and the input mode
+        self.input_mode = InputMode::Normal;
+        self.antenna_filter.state = ListState::default();
+
         Ok(())
     }
     // END list examples
