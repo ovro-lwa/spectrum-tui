@@ -146,7 +146,7 @@ impl App {
                     );
 
                 let area =
-                    ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Length(3));
+                    ui::center_popup(chunks[1], Constraint::Length(20), &[Constraint::Length(3)]);
                 frame.render_widget(Clear, area); //this clears out the background
                 frame.render_widget(input, area);
 
@@ -175,8 +175,11 @@ impl App {
                             .title("Select Antenna")
                             .borders(Borders::ALL),
                     );
-                let area =
-                    ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Length(3));
+                let area = ui::center_popup(
+                    chunks[1],
+                    Constraint::Length(20),
+                    &[Constraint::Percentage(10), Constraint::Max(20)],
+                );
                 frame.render_widget(Clear, area); //this clears out the background
                 frame.render_stateful_widget(list, area, &mut self.antenna_filter.state);
             }

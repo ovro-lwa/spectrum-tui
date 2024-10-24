@@ -117,10 +117,10 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
-pub(crate) fn center_popup(area: Rect, horizontal: Constraint, vertical: Constraint) -> Rect {
+pub(crate) fn center_popup(area: Rect, horizontal: Constraint, vertical: &[Constraint]) -> Rect {
     let [area] = Layout::horizontal([horizontal])
         .flex(Flex::Center)
         .areas(area);
-    let [area] = Layout::vertical([vertical]).flex(Flex::Center).areas(area);
+    let [area] = Layout::vertical(vertical).flex(Flex::Center).areas(area);
     area
 }
