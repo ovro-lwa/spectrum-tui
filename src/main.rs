@@ -67,7 +67,7 @@ impl Action {
                 Cell::from(Span::styled("Quit", help_style)),
             ]),
             Row::new(vec![
-                Cell::from(Span::styled("n", key_style)),
+                Cell::from(Span::styled("a", key_style)),
                 Cell::from(Span::styled("Add New Antenna", help_style)),
             ]),
             Row::new(vec![
