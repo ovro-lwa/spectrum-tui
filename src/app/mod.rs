@@ -71,8 +71,15 @@ pub(crate) struct App {
 impl App {
     pub fn new(refresh_rate: Duration, data_backend: TuiType) -> Self {
         let (filter_sender, filter_recv) = tokio::sync::mpsc::channel(10);
+
+        let antenna_filter = if let TuiType::Live { antenna, .. } = &data_backend {
+            antenna.to_owned()
+        } else {
+            vec![]
+        };
+
         Self {
-            antenna_filter: vec![],
+            antenna_filter,
             spectra: None,
             refresh_rate,
             data_backend,
@@ -124,7 +131,7 @@ impl App {
                         .borders(Borders::ALL),
                 );
 
-            let area = ui::center_popup(chunks[1], Constraint::Length(10), Constraint::Length(3));
+            let area = ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Length(3));
             frame.render_widget(Clear, area); //this clears out the background
             frame.render_widget(input, area);
 
@@ -169,6 +176,8 @@ impl App {
                             }
                             Some(filter) = filter_recv.recv() => {
                                 data_loader.filter_antenna(&filter)?;
+                                // force a tick now to update the data
+                                interval.reset_immediately();
                             }
                         }
                     }
@@ -275,7 +284,7 @@ impl App {
 
     // Submit the antenna to the backend but also reset to plotter mode
     async fn submit_antenna_filter(&mut self) -> Result<()> {
-        self.antenna_filter.push(self.input.clone());
+        self.antenna_filter.push(self.input.trim().to_owned());
 
         self.filter_sender.send(self.antenna_filter.clone()).await?;
 

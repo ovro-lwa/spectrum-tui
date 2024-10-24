@@ -205,7 +205,7 @@ impl EtcdLoader {
             .map(|ant| {
                 self.ant_info
                     .iter()
-                    .find(|info| info.antname == *ant)
+                    .find(|info| info.antname.to_lowercase() == *ant.to_lowercase())
                     .cloned()
             })
             // this sorts them by snap location
