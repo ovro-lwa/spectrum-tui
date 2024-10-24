@@ -14,8 +14,8 @@ use crossterm::{
 use futures::Stream;
 use log::info;
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Position},
     style::Style,
     widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
@@ -84,8 +84,8 @@ impl App {
         }
     }
 
-    pub fn draw<B: Backend>(&self, frame: &mut Frame<B>) {
-        let size = frame.size();
+    pub fn draw(&self, frame: &mut Frame) {
+        let size = frame.area();
 
         // Vertical layout
         let chunks = Layout::default()
@@ -124,17 +124,17 @@ impl App {
                         .borders(Borders::ALL),
                 );
 
-            let area = ui::centered_rect(60, 20, size);
+            let area = ui::center_popup(chunks[1], Constraint::Length(10), Constraint::Length(3));
             frame.render_widget(Clear, area); //this clears out the background
             frame.render_widget(input, area);
 
-            frame.set_cursor(
+            frame.set_cursor_position(Position::new(
                 // Draw the cursor at the current position in the input field.
                 // This position is can be controlled via the left and right arrow key
                 area.x + self.character_index as u16 + 1,
                 // Move one line down, from the border to the input line
                 area.y + 1,
-            );
+            ));
         }
     }
 

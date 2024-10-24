@@ -1,6 +1,6 @@
 use ndarray::Array;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::Span,
@@ -55,14 +55,14 @@ pub(crate) fn draw_help<'a>() -> Table<'a> {
         ]),
     ];
 
-    Table::new(rows)
+    Table::new(rows, &[Constraint::Length(11), Constraint::Min(20)])
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
                 .title("Help"),
         )
-        .widths(&[Constraint::Length(11), Constraint::Min(20)])
+        // .widths(&[Constraint::Length(11), Constraint::Min(20)])
         .column_spacing(1)
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
                 let fraction = ((cnt + 1) as f32 / n_spectra as f32) * 255.0;
 
                 Dataset::default()
-                    .name(name)
+                    .name(name.clone())
                     .marker(symbols::Marker::Braille)
                     .style(Style::default().fg(Color::Indexed(fraction as u8)))
                     .graph_type(GraphType::Line)
@@ -128,28 +128,10 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
-pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            [
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ]
-            .as_ref(),
-        )
-        .split(popup_layout[1])[1]
+pub(crate) fn center_popup(area: Rect, horizontal: Constraint, vertical: Constraint) -> Rect {
+    let [area] = Layout::horizontal([horizontal])
+        .flex(Flex::Center)
+        .areas(area);
+    let [area] = Layout::vertical([vertical]).flex(Flex::Center).areas(area);
+    area
 }
