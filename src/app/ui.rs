@@ -4,13 +4,11 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols,
     text::Span,
-    widgets::{
-        Axis, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table,
-    },
+    widgets::{Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, Paragraph, Table},
 };
 use tui_logger::TuiLoggerWidget;
 
-use crate::loader::AutoSpectra;
+use crate::{loader::AutoSpectra, Action};
 
 pub(crate) fn draw_title<'a>() -> Paragraph<'a> {
     Paragraph::new("Spectrum Tui!!")
@@ -44,16 +42,7 @@ pub(crate) fn draw_help<'a>() -> Table<'a> {
     let key_style = Style::default().fg(Color::LightCyan);
     let help_style = Style::default().fg(Color::Gray);
 
-    let rows = vec![
-        Row::new(vec![
-            Cell::from(Span::styled("<Esc>/q", key_style)),
-            Cell::from(Span::styled("Quit", help_style)),
-        ]),
-        Row::new(vec![
-            Cell::from(Span::styled("n", key_style)),
-            Cell::from(Span::styled("New Antenna", help_style)),
-        ]),
-    ];
+    let rows = Action::gen_help(key_style, help_style);
 
     Table::new(rows, &[Constraint::Length(11), Constraint::Min(20)])
         .block(

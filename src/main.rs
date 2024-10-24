@@ -8,7 +8,13 @@ use crossterm::{
     terminal::{enable_raw_mode, EnterAlternateScreen},
 };
 use log::{trace, LevelFilter};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{
+    backend::CrosstermBackend,
+    style::Style,
+    text::Span,
+    widgets::{Cell, Row},
+    Terminal,
+};
 use tui_logger::{init_logger, set_default_level};
 
 mod app;
@@ -19,6 +25,7 @@ mod loader;
 enum Action {
     Break,
     NewAnt,
+    DelAnt,
 }
 impl Action {
     pub fn from_event(event: KeyEvent) -> Option<Self> {
@@ -26,11 +33,17 @@ impl Action {
 
         match event {
             KeyEvent {
-                code: KeyCode::Char('n'),
+                code: KeyCode::Char('a'),
                 modifiers: KeyModifiers::NONE,
                 kind: _,
                 state: _,
             } => Some(Self::NewAnt),
+            KeyEvent {
+                code: KeyCode::Char('d'),
+                modifiers: KeyModifiers::NONE,
+                kind: _,
+                state: _,
+            } => Some(Self::DelAnt),
             KeyEvent {
                 code: KeyCode::Esc,
                 modifiers: KeyModifiers::NONE,
@@ -45,6 +58,23 @@ impl Action {
             } => Some(Self::Break),
             _ => None,
         }
+    }
+
+    pub fn gen_help<'a>(key_style: Style, help_style: Style) -> Vec<Row<'a>> {
+        vec![
+            Row::new(vec![
+                Cell::from(Span::styled("<Esc>/q", key_style)),
+                Cell::from(Span::styled("Quit", help_style)),
+            ]),
+            Row::new(vec![
+                Cell::from(Span::styled("n", key_style)),
+                Cell::from(Span::styled("Add New Antenna", help_style)),
+            ]),
+            Row::new(vec![
+                Cell::from(Span::styled("d", key_style)),
+                Cell::from(Span::styled("Remove Antenna", help_style)),
+            ]),
+        ]
     }
 }
 

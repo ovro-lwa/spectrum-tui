@@ -16,8 +16,8 @@ use log::info;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Position},
-    style::Style,
-    widgets::{Block, Borders, Clear, Paragraph},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -30,6 +30,8 @@ use crate::{
 
 pub(crate) mod ui;
 
+const SELECTED_STYLE: Style = Style::new().bg(Color::Gray).add_modifier(Modifier::BOLD);
+
 enum StreamReturn {
     Action(Result<Event, io::Error>),
     Data(AutoSpectra),
@@ -40,12 +42,19 @@ enum StreamReturn {
 enum InputMode {
     Normal,
     AntennaInput,
+    RemoveAntenna,
+}
+
+#[derive(Debug)]
+struct AntennaFilter {
+    items: Vec<String>,
+    state: ListState,
 }
 
 #[derive(Debug)]
 pub(crate) struct App {
     /// Used to store/update which antennas are currently being plotted
-    antenna_filter: Vec<String>,
+    antenna_filter: AntennaFilter,
 
     /// Spectra to be plotted on the next draw
     spectra: Option<AutoSpectra>,
@@ -79,7 +88,10 @@ impl App {
         };
 
         Self {
-            antenna_filter,
+            antenna_filter: AntennaFilter {
+                items: antenna_filter,
+                state: ListState::default(),
+            },
             spectra: None,
             refresh_rate,
             data_backend,
@@ -91,7 +103,7 @@ impl App {
         }
     }
 
-    pub fn draw(&self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame) {
         let size = frame.area();
 
         // Vertical layout
@@ -122,26 +134,52 @@ impl App {
         // Body & Help
         frame.render_widget(ui::draw_help(), log_chunks[1]);
 
-        if self.input_mode == InputMode::AntennaInput {
-            let input = Paragraph::new(self.input.as_str())
-                .style(Style::default())
-                .block(
-                    Block::default()
-                        .title("Enter Antenna Name")
-                        .borders(Borders::ALL),
-                );
+        match self.input_mode {
+            InputMode::Normal => {}
+            InputMode::AntennaInput => {
+                let input = Paragraph::new(self.input.as_str())
+                    .style(Style::default())
+                    .block(
+                        Block::default()
+                            .title("Enter Antenna Name")
+                            .borders(Borders::ALL),
+                    );
 
-            let area = ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Length(3));
-            frame.render_widget(Clear, area); //this clears out the background
-            frame.render_widget(input, area);
+                let area =
+                    ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Length(3));
+                frame.render_widget(Clear, area); //this clears out the background
+                frame.render_widget(input, area);
 
-            frame.set_cursor_position(Position::new(
-                // Draw the cursor at the current position in the input field.
-                // This position is can be controlled via the left and right arrow key
-                area.x + self.character_index as u16 + 1,
-                // Move one line down, from the border to the input line
-                area.y + 1,
-            ));
+                frame.set_cursor_position(Position::new(
+                    // Draw the cursor at the current position in the input field.
+                    // This position is can be controlled via the left and right arrow key
+                    area.x + self.character_index as u16 + 1,
+                    // Move one line down, from the border to the input line
+                    area.y + 1,
+                ));
+            }
+            InputMode::RemoveAntenna => {
+                let items: Vec<ListItem> = self
+                    .antenna_filter
+                    .items
+                    .iter()
+                    .map(|todo_item| ListItem::from(todo_item.clone()))
+                    .collect();
+                // render the List in the middle of the screen
+                let list = List::new(items)
+                    .highlight_style(SELECTED_STYLE)
+                    .highlight_symbol(">")
+                    .highlight_spacing(HighlightSpacing::Always)
+                    .block(
+                        Block::default()
+                            .title("Select Antenna")
+                            .borders(Borders::ALL),
+                    );
+                let area =
+                    ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Length(3));
+                frame.render_widget(Clear, area); //this clears out the background
+                frame.render_stateful_widget(list, area, &mut self.antenna_filter.state);
+            }
         }
     }
 
@@ -284,9 +322,13 @@ impl App {
 
     // Submit the antenna to the backend but also reset to plotter mode
     async fn submit_antenna_filter(&mut self) -> Result<()> {
-        self.antenna_filter.push(self.input.trim().to_owned());
+        self.antenna_filter
+            .items
+            .push(self.input.trim().to_uppercase().to_owned());
 
-        self.filter_sender.send(self.antenna_filter.clone()).await?;
+        self.filter_sender
+            .send(self.antenna_filter.items.clone())
+            .await?;
 
         self.input.clear();
         self.reset_cursor();
@@ -296,6 +338,27 @@ impl App {
     }
 
     // END ratatui example functions
+
+    // BEGIN functions pulled from list examples edited for need
+    fn select_next(&mut self) {
+        self.antenna_filter.state.select_next();
+    }
+
+    fn select_previous(&mut self) {
+        self.antenna_filter.state.select_previous();
+    }
+
+    async fn remove_antenna(&mut self) -> Result<()> {
+        if let Some(i) = self.antenna_filter.state.selected() {
+            self.antenna_filter.items.remove(i);
+            self.filter_sender
+                .send(self.antenna_filter.items.clone())
+                .await?;
+        }
+
+        Ok(())
+    }
+    // END list examples
 
     pub async fn run<W: Write>(
         mut self,
@@ -320,6 +383,9 @@ impl App {
                                     match action {
                                         Action::Break => break 'plotting_loop,
                                         Action::NewAnt => self.input_mode = InputMode::AntennaInput,
+                                        Action::DelAnt => {
+                                            self.input_mode = InputMode::RemoveAntenna
+                                        }
                                     }
                                 }
                             }
@@ -334,7 +400,23 @@ impl App {
                                     _ => {}
                                 }
                             }
+                            // ignore other inputs in text mode
                             InputMode::AntennaInput => {}
+
+                            // Remove an antenna from the filter
+                            InputMode::RemoveAntenna if event.kind == KeyEventKind::Press => {
+                                match event.code {
+                                    KeyCode::Esc => self.input_mode = InputMode::Normal,
+                                    KeyCode::Char('j') | KeyCode::Down => self.select_next(),
+                                    KeyCode::Char('k') | KeyCode::Up => self.select_previous(),
+                                    KeyCode::Enter => {
+                                        self.remove_antenna().await?;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // ignore other inputs in delete ant mode
+                            InputMode::RemoveAntenna => {}
                         },
                         // we are not interested in Focuses and mouse movements
                         Ok(_) => {}
