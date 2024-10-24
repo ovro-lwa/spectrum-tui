@@ -322,9 +322,9 @@ impl App {
 
     // Submit the antenna to the backend but also reset to plotter mode
     async fn submit_antenna_filter(&mut self) -> Result<()> {
-        self.antenna_filter
-            .items
-            .push(self.input.trim().to_uppercase().to_owned());
+        let new_ant = self.input.trim().to_uppercase().to_owned();
+        info!("Adding Antenna {new_ant:?}");
+        self.antenna_filter.items.push(new_ant);
 
         self.filter_sender
             .send(self.antenna_filter.items.clone())
@@ -350,7 +350,8 @@ impl App {
 
     async fn remove_antenna(&mut self) -> Result<()> {
         if let Some(i) = self.antenna_filter.state.selected() {
-            self.antenna_filter.items.remove(i);
+            let removed = self.antenna_filter.items.remove(i);
+            info!("Removing: {removed}");
             self.filter_sender
                 .send(self.antenna_filter.items.clone())
                 .await?;
