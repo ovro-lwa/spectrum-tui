@@ -5,23 +5,34 @@
 
  # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+ ovro   = [ "dep:etcd-client", "dep:ndarray-npy", "dep:serde_json" ]
+ lwa-na = [ "dep:byteorder", "dep:hifitime" ]
+
 [dependencies]
- anyhow       = "1.0.71"
+ anyhow       = "~1.0"
  async-stream = "0.3.5"
  async-trait  = "0.1.68"
+ byteorder    = { version = "~1.5", optional = true }
  clap         = { version = "4.3.0", features = [ "derive" ] }
  crossterm    = { version = "0.26.1", features = [ "event-stream" ] }
- etcd-client  = "0.11.1"
+ etcd-client  = { version = "0.11.1", optional = true }
  futures      = "0.3.28"
+ hifitime     = { version = "4.0.0", optional = true }
+ itertools    = "0.11.0"
  log          = "0.4.17"
  ndarray      = "0.15"
- ndarray-npy  = "0.8.1"
- serde_json   = "1.0.96"
+ ndarray-npy  = { version = "0.8.1", optional = true }
+ serde_json   = { version = "1.0.96", optional = true }
  tokio        = { version = "1.41.0", features = [ "full" ] }
  tokio-stream = "0.1.14"
  ratatui      = "~0.28"
  tui-logger   = { version = "~0.13" }
- itertools    = "0.11.0"
+
+[dev-dependencies]
+ ndarray-npy = { version = "0.8.1" }
+ ndarray     = { version = "0.15", features = [ "approx" ] }
+ curl        = "0.4.47"
 
 
 [profile.release]

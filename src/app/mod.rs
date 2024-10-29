@@ -6,11 +6,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use async_stream::stream;
-use crossterm::{
-    event::{DisableMouseCapture, Event, EventStream, KeyCode, KeyEventKind},
-    execute,
-    terminal::{disable_raw_mode, LeaveAlternateScreen},
-};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use futures::Stream;
 use log::info;
 use ratatui::{
@@ -23,8 +19,13 @@ use ratatui::{
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::{StreamExt, StreamMap};
 
+#[cfg(feature = "ovro")]
+use crate::loader::ovro::{DiskLoader, EtcdLoader};
+
+// otherwise clippy complains about the Trait import
+#[allow(unused_imports)]
 use crate::{
-    loader::{AutoSpectra, DiskLoader, EtcdLoader, SpectrumLoader},
+    loader::{AutoSpectra, SpectrumLoader},
     Action, TuiType,
 };
 
@@ -81,11 +82,14 @@ impl App {
     pub fn new(refresh_rate: Duration, data_backend: TuiType) -> Self {
         let (filter_sender, filter_recv) = tokio::sync::mpsc::channel(10);
 
+        #[cfg(feature = "ovro")]
         let antenna_filter = if let TuiType::Live { antenna, .. } = &data_backend {
             antenna.to_owned()
         } else {
             vec![]
         };
+        #[cfg(not(feature = "ovro"))]
+        let antenna_filter = vec![];
 
         Self {
             antenna_filter: AntennaFilter {
@@ -184,21 +188,50 @@ impl App {
 
     fn spawn_backend(
         backend: TuiType,
+        // make some lint exceptions to allow the no-feature
+        // test compilation to work
+        #[allow(unused_mut)]
+        #[allow(unused_variables)]
         mut filter_recv: Receiver<Vec<String>>,
     ) -> Receiver<AutoSpectra> {
         let (sender, recvr) = tokio::sync::mpsc::channel(30);
 
         tokio::spawn(async move {
             match backend {
+                #[cfg(not(any(feature = "ovro")))]
+                TuiType::Noop => {
+                    sender
+                        .send(AutoSpectra {
+                            freq_min: 0.0,
+                            freq_max: 200.0,
+                            ant_names: vec!["test".to_owned()],
+                            spectra: vec![vec![(0.0, -20.0), (10.0, -40.0), (40.0, -35.0)]],
+                        })
+                        .await?;
+                }
+                #[cfg(feature = "ovro")]
                 TuiType::File {
                     nspectra,
                     input_file,
                 } => {
-                    let mut data_loader = DiskLoader::new(nspectra, input_file);
+                    let mut data_loader = DiskLoader::new(input_file);
+
+                    data_loader.filter_antenna(
+                        (0..nspectra)
+                            .map(|s| format!("{s}"))
+                            .collect::<Vec<_>>()
+                            .as_slice(),
+                    )?;
+
                     if let Some(spec) = data_loader.get_data().await {
                         sender.send(spec).await?;
                     }
+
+                    while let Some(filter) = filter_recv.recv().await {
+                        data_loader.filter_antenna(&filter)?;
+                    }
                 }
+                #[cfg(feature = "ovro")]
                 TuiType::Live { antenna, delay } => {
                     let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
                     data_loader.filter_antenna(&antenna)?;
@@ -230,6 +263,8 @@ impl App {
         refresh_rate: Duration,
         filter_recv: Receiver<Vec<String>>,
     ) -> StreamMap<&'static str, Pin<Box<dyn Stream<Item = StreamReturn> + Send>>> {
+        let mut stream = tokio_stream::StreamMap::new();
+
         let mut data_recv = Self::spawn_backend(data_backend, filter_recv);
 
         let data_stream = Box::pin(
@@ -251,8 +286,6 @@ impl App {
 
         let reader = EventStream::new().map(StreamReturn::Action);
         let reader = Box::pin(reader) as Pin<Box<dyn Stream<Item = StreamReturn> + Send>>;
-
-        let mut stream = tokio_stream::StreamMap::new();
 
         stream.insert("input", reader);
         stream.insert("data", data_stream);
@@ -366,7 +399,7 @@ impl App {
 
     pub async fn run<W: Write>(
         mut self,
-        mut terminal: Terminal<CrosstermBackend<W>>,
+        terminal: &mut Terminal<CrosstermBackend<W>>,
     ) -> Result<()> {
         let mut stream = Self::init_streams(
             self.data_backend.clone(),
@@ -435,15 +468,6 @@ impl App {
 
             terminal.draw(|frame| self.draw(frame))?;
         }
-
-        // restore terminal
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
-        terminal.show_cursor()?;
 
         Ok(())
     }

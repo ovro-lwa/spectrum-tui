@@ -1,11 +1,11 @@
-use std::{io, path::PathBuf, time::Duration};
+use std::{io, time::Duration};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
+    event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{enable_raw_mode, EnterAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use log::{trace, LevelFilter};
 use ratatui::{
@@ -16,6 +16,9 @@ use ratatui::{
     Terminal,
 };
 use tui_logger::{init_logger, set_default_level};
+
+#[cfg(feature = "ovro")]
+use std::path::PathBuf;
 
 mod app;
 use app::App;
@@ -80,6 +83,10 @@ impl Action {
 
 #[derive(Debug, Subcommand, Clone)]
 enum TuiType {
+    #[cfg(not(any(feature = "ovro")))]
+    #[clap(name = "no-op")]
+    Noop,
+    #[cfg(feature = "ovro")]
     #[clap(arg_required_else_help = true)]
     /// Plot spectra from an RFIMonitorTool output npy file
     File {
@@ -90,6 +97,7 @@ enum TuiType {
         /// Numpy save file from the RFIMonitor
         input_file: PathBuf,
     },
+    #[cfg(feature = "ovro")]
     #[clap(arg_required_else_help = true)]
     /// Watch live autospectra from the correlator
     Live {
@@ -128,10 +136,20 @@ async fn main() -> Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend)?;
 
     let app = App::new(Duration::from_millis(100), cli.tv_type);
-    app.run(terminal).await?;
+    let result = app.run(&mut terminal).await;
 
-    Ok(())
+    // we always want to restore the terminal
+    // restore terminal
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    result
 }
