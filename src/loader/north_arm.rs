@@ -1,7 +1,7 @@
 use std::{
     fs,
-    io::{BufReader, Read},
-    path::Path,
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
 };
 
 // adapted from https://github.com/lwa-project/lsl/blob/main/lsl/reader/drspec.cpp
@@ -108,6 +108,7 @@ pub(crate) struct DRHeader {
 impl DRHeader {
     const SYNC_HEADER: u32 = 0xC0DEC0DE_u32;
     const SYNC_FOOTER: u32 = 0xED0CED0C_u32;
+    const LEN: usize = 76;
 
     const CLOCK_SPEED: f64 = 196.0e6;
 
@@ -177,7 +178,7 @@ impl DRHeader {
 
         // header is only 76 bytes, we don't need to read more than that
         let mut buffer = BufReader::with_capacity(
-            76,
+            Self::LEN,
             fs::OpenOptions::new()
                 .read(true)
                 .open(path)
@@ -211,6 +212,10 @@ impl DRHeader {
         tt
     }
 
+    fn len_bytes(&self) -> usize {
+        2 * 4 * self.n_freqs as usize * self.stokes_format.pol_count() as usize
+    }
+
     pub(crate) fn sample_rate(&self) -> f64 {
         Self::CLOCK_SPEED / self.decimation_factor as f64
     }
@@ -238,6 +243,47 @@ pub(crate) struct DRSpectrum {
     pub data: Array<f32, Ix3>,
 }
 impl DRSpectrum {
+    /// Locates the next spectrum in the file and sets the cursor position
+    pub fn find_next_spectra<R: Read + Seek>(buffer: &mut BufReader<R>) -> Result<()> {
+        loop {
+            let bytes = buffer.fill_buf()?;
+
+            if bytes.is_empty() {
+                bail!("No additional data in file");
+            }
+
+            let pos = bytes
+                .as_ref()
+                .windows(DRHeader::SYNC_HEADER.to_le_bytes().len())
+                .position(|window| window == DRHeader::SYNC_HEADER.to_le_bytes());
+
+            match pos {
+                Some(index) => {
+                    buffer.consume(index);
+                    return Ok(());
+                }
+                None => {
+                    let len = bytes.len();
+                    buffer.consume(len);
+                }
+            }
+        }
+    }
+
+    pub fn read_last_spectrum<R: Read + Seek>(buffer: &mut BufReader<R>) -> Result<Self> {
+        DRSpectrum::find_next_spectra(buffer)?;
+
+        let header = DRHeader::from_bytes(buffer)?;
+        // advance past this spectrum
+        // we have 2 tunings * n_freqs * npols * 4 (byte depth) bytes
+        let spectra_len = header.len_bytes();
+
+        let total_offset = spectra_len as i64 + DRHeader::LEN as i64;
+        buffer.seek(SeekFrom::End(-total_offset))?;
+
+        DRSpectrum::from_bytes(buffer)
+    }
+
     pub fn from_bytes<R: Read>(file_handle: &mut R) -> Result<Self> {
         let header = DRHeader::from_bytes(file_handle)?;
 
@@ -337,6 +383,8 @@ impl DRSpectrum {
 
 #[cfg(test)]
 mod test {
+    use std::io::Seek;
+
     use super::*;
 
     #[test]
@@ -407,5 +455,52 @@ mod test {
         let spectrum2 = DRSpectrum::from_bytes(&mut file_handle).expect("Unable to read test data");
 
         assert_ne!(spectrum, spectrum2)
+    }
+
+    #[test]
+    fn find_next_spectra() {
+        let data_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("two_spectra");
+        let mut file_handle = BufReader::new(
+            fs::OpenOptions::new()
+                .read(true)
+                .open(&data_file)
+                .unwrap_or_else(|_| panic!("Unable to open {}", data_file.display())),
+        );
+
+        let mut cnt = 0;
+
+        while let Ok(()) = DRSpectrum::find_next_spectra(&mut file_handle) {
+            assert_eq!(cnt, file_handle.stream_position().unwrap());
+            cnt += 32844;
+            let len = file_handle.buffer().len();
+            file_handle.consume(len);
+        }
+    }
+
+    #[test]
+    fn read_last() {
+        let data_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("data")
+            .join("two_spectra");
+        let mut file_handle = BufReader::new(
+            fs::OpenOptions::new()
+                .read(true)
+                .open(&data_file)
+                .unwrap_or_else(|_| panic!("Unable to open {}", data_file.display())),
+        );
+
+        let _ = DRSpectrum::from_bytes(&mut file_handle).expect("unable to read test data.");
+        let expected_spectra =
+            DRSpectrum::from_bytes(&mut file_handle).expect("unable to read test data.");
+
+        // rewind the file
+        file_handle.rewind().expect("unable to rewind test file.");
+
+        let spectrum = DRSpectrum::read_last_spectrum(&mut file_handle)
+            .expect("Unable to read last spectrum.");
+
+        assert_eq!(expected_spectra, spectrum)
     }
 }
