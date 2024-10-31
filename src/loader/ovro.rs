@@ -303,7 +303,8 @@ impl EtcdLoader {
                             })
                             .flatten(),
                     )
-                    .into_shape((2, 4096))?;
+                    .to_shape((2, 4096))?
+                    .to_owned();
                     all_sectra = concatenate![Axis(0), all_sectra.view(), spectra.view()];
                 }
             }

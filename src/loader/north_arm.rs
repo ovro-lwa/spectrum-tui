@@ -1,14 +1,20 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom},
+    net::TcpStream,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 // adapted from https://github.com/lwa-project/lsl/blob/main/lsl/reader/drspec.cpp
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use async_trait::async_trait;
 use byteorder::{LittleEndian, ReadBytesExt};
 use hifitime::Epoch;
 use ndarray::{Array, Axis, Ix1, Ix2, Ix3};
+use ssh2::{Session, Sftp};
+
+use crate::loader::{AutoSpectra, SpectrumLoader};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,6 +59,25 @@ impl PolarizationType {
             c += 1;
         }
         c
+    }
+
+    pub fn desription(&self) -> Vec<String> {
+        match self {
+            Self::LinearXX => vec!["XX".into()],
+            Self::LinearXYReRe => vec!["Re(XY)".into()],
+            Self::LinearXYIm => vec!["Im(XY)".into()],
+            Self::LinearYY => vec!["YY".into()],
+            Self::LinearRealHalf => vec!["XX".into(), "YY".into()],
+            Self::LinearOtherHalf => vec!["Re(XY)".into(), "Im(XY)".into()],
+            Self::LinearFull => vec!["XX".into(), "Re(XY)".into(), "Im(XY)".into(), "YY".into()],
+            Self::StokesI => vec!["I".into()],
+            Self::StokesQ => vec!["Q".into()],
+            Self::StokesU => vec!["U".into()],
+            Self::StokesV => vec!["V".into()],
+            Self::StokesRealHalf => vec!["I".into(), "V".into()],
+            Self::StokesOtherHalf => vec!["Q".into(), "U".into()],
+            Self::StokesFull => vec!["I".into(), "Q".into(), "U".into(), "V".into()],
+        }
     }
 }
 
@@ -303,8 +328,9 @@ impl DRSpectrum {
                         .expect("Unable to coerce len 4 slice into array."),
                 )
             }))
-            .into_shape(data_shape)
+            .to_shape(data_shape)
             .with_context(|| format!("Unable to coerce data vec into shape: {data_shape:?}"))?
+            .to_owned()
         };
 
         // an (n_tunings, 1, npols)  conversion factor
@@ -378,6 +404,173 @@ impl DRSpectrum {
         data = data / data_norms;
 
         Ok(Self { header, data })
+    }
+}
+
+/// A Spectrum loader for the LWA North Arm
+/// connects to the datarecorder and reads from the spectrum
+/// file on disk
+pub struct DRLoader {
+    /// The DataRecorder this loader listens to
+    pub data_recorder: String,
+
+    /// DataRecorder spectrum file
+    pub filename: Option<PathBuf>,
+
+    /// the basename of the file we are reading
+    pub file_tag: Option<String>,
+
+    /// SFTP session use to query for new files and read data
+    sftp: Sftp,
+
+    /// the last timestamp data was gathered for
+    last_timestamp: Epoch,
+}
+impl std::fmt::Debug for DRLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DRLoader")
+            .field("data_recorder", &self.data_recorder)
+            .field("filename", &self.filename)
+            .finish()
+    }
+}
+impl DRLoader {
+    pub fn new<P: AsRef<str>>(data_recorder: P) -> Result<Self> {
+        let data_recorder = data_recorder.as_ref();
+        // Connect to the local SSH server
+        let tcp = TcpStream::connect(format!("{}:22", data_recorder))
+            .context("Error initializing TCP connection")?;
+
+        let mut sess = Session::new().context("Unable to initialize SSH Session")?;
+        sess.set_tcp_stream(tcp);
+        sess.handshake().context("SSH Handshake error")?;
+
+        // Try to authenticate with the first identity in the agent.
+        sess.userauth_agent("mcsdr")
+            .context("Error authenticating as mcsdr")?;
+        // Make sure we succeeded
+        ensure!(
+            sess.authenticated(),
+            "SSH Session could not be authenticated"
+        );
+
+        let mut me = Self {
+            data_recorder: data_recorder.to_owned(),
+            filename: None,
+            file_tag: None,
+            sftp: sess.sftp().context("Error initializing sftp server")?,
+            last_timestamp: Epoch::now().context("Unable to initilize timestamp")?,
+        };
+
+        me.find_lastest_file()?;
+
+        Ok(me)
+    }
+
+    fn find_lastest_file(&mut self) -> Result<()> {
+        self.filename = self
+            .sftp
+            .readdir(Path::new("/LWA_STORAGE/Internal/"))?
+            .into_iter()
+            .filter_map(|(path, stat)| if stat.is_dir() { Some(path) } else { None })
+            .map(|path| self.sftp.readdir(&path.join("DROS/Spec/")))
+            .filter_map(Result::ok)
+            .flatten()
+            .filter(|(path, stat)| {
+                stat.is_file()
+                    && path
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .map_or(false, |name| name.starts_with("0"))
+            })
+            .max_by_key(|(_path1, stat1)| stat1.mtime.unwrap_or(0))
+            .map(|(path, _stat)| path);
+
+        if let Some(path) = &self.filename {
+            self.file_tag = path
+                .file_name()
+                .and_then(|name| name.to_str().map(|x| x.to_owned()));
+
+            if let Some(name) = &self.file_tag {
+                log::info!("Reading spectra from {name} on {}", self.data_recorder);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_latest_spectra(&mut self) -> Result<Option<DRSpectrum>> {
+        if let Some(filename) = &self.filename {
+            let file_handle = self
+                .sftp
+                .open(filename)
+                .with_context(|| format!("Error opening remote file: {}", filename.display()))?;
+            let mut reader = BufReader::new(file_handle);
+
+            DRSpectrum::read_last_spectrum(&mut reader).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[async_trait]
+impl SpectrumLoader for DRLoader {
+    /// Loads autospectrum data from the underlying source and sends
+    /// correlations (freq, val) pairs over the channel to the main process.
+    async fn get_data(&mut self) -> Option<AutoSpectra> {
+        let spectra = match self.get_latest_spectra() {
+            Ok(val) => Ok(val),
+            Err(err) => match err.downcast::<std::io::Error>() {
+                Ok(error) if error.kind() == ErrorKind::UnexpectedEof => {
+                    // in this case we're reading data but it is not all written yet
+                    // wait a little bit and try again
+                    std::thread::sleep(Duration::from_micros(50));
+                    self.get_latest_spectra()
+                }
+                Ok(error) => Err(error.into()),
+                Err(error) => Err(error),
+            },
+        }
+        .ok()
+        .flatten()?;
+
+        if self.last_timestamp == spectra.header.timestamp {
+            // no new data has been written, close this file and look for a new one.
+            self.find_lastest_file().ok()?;
+            self.get_data().await
+        } else {
+            // package the data up
+            // transform to MHz
+            let DRSpectrum { header, data } = spectra;
+            let freqs = header.get_freqs().map(|x| x / 1e6);
+
+            let flat_freqs = freqs.flatten().to_owned();
+
+            let spec_data = data
+                .axis_iter(Axis(2))
+                .map(|arr| {
+                    flat_freqs
+                        .clone()
+                        .into_iter()
+                        .zip(arr.into_iter().map(|y| 10.0 * (*y as f64).log10()))
+                        .collect::<Vec<(f64, f64)>>()
+                })
+                .collect::<Vec<_>>();
+
+            Some(AutoSpectra {
+                freq_min: freqs.fold(f64::INFINITY, |a, &b| a.min(b)),
+                freq_max: freqs.fold(f64::NEG_INFINITY, |a, &b| a.max(b)),
+                ant_names: header.stokes_format.desription(),
+                spectra: spec_data,
+            })
+        }
+    }
+
+    /// Filters the antennas to be plotted based on their string names.
+    fn filter_antenna(&mut self, _antenna_number: &[String]) -> Result<()> {
+        // not sure if we can even do anything with this
+        Ok(())
     }
 }
 
