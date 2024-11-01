@@ -1,3 +1,5 @@
+use core::f64;
+
 use ndarray::Array;
 use ratatui::{
     layout::{Alignment, Constraint, Flex, Layout, Rect},
@@ -58,9 +60,11 @@ pub(crate) fn draw_help<'a>() -> Table<'a> {
 pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
     let datasets = data.map_or(vec![], |specs| {
         let n_spectra = specs.spectra.len();
-        specs
-            .spectra
-            .iter()
+        let plot_data = match specs.plot_log {
+            true => specs.log_spectra.iter(),
+            false => specs.spectra.iter(),
+        };
+        plot_data
             .zip(specs.ant_names.iter())
             .enumerate()
             .map(|(cnt, (x, name))| {
@@ -78,10 +82,33 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
 
     let xmin = data.map_or(0.0, |x| x.freq_min);
     let xmax = data.map_or(10.0, |x| x.freq_max);
+
+    let ymin = data.map_or(-120.0, |x| {
+        x.spectra.iter().fold(f64::INFINITY, |a, b| {
+            a.min(b.iter().fold(f64::INFINITY, |c, d| c.min(d.1)))
+        })
+    }) - 10.0;
+
+    let ymax = data.map_or(-20.0, |x| {
+        x.spectra.iter().fold(f64::NEG_INFINITY, |a, b| {
+            a.max(b.iter().fold(f64::NEG_INFINITY, |c, d| c.max(d.1)))
+        })
+    }) + 10.0;
+
+    let ylabels = Array::linspace(ymin, ymax, 11)
+        .iter()
+        .map(|x| Span::raw(format!("{:.1}", x)))
+        .collect::<Vec<_>>();
+
     let labels = Array::linspace(xmin, xmax, 11)
         .iter()
         .map(|x| Span::raw(format!("{:.1}", x)))
         .collect::<Vec<_>>();
+
+    let title = data.map_or("Power [dB]", |spec| match spec.plot_log {
+        true => "Power [dB]",
+        false => "Power [Absolute]",
+    });
 
     Chart::new(datasets)
         .block(
@@ -104,15 +131,10 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
         )
         .y_axis(
             Axis::default()
-                .title("Power [dB]")
+                .title(title)
                 .style(Style::default().fg(Color::Gray))
-                .bounds([-120.0, -20.0])
-                .labels(
-                    Array::linspace(-120.0, -20.0, 11)
-                        .iter()
-                        .map(|x| Span::raw(format!("{:.1}", x)))
-                        .collect::<Vec<_>>(),
-                ),
+                .bounds([ymin, ymax])
+                .labels(ylabels),
         )
 }
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     fs,
     io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom},
@@ -405,6 +407,82 @@ impl DRSpectrum {
 
         Ok(Self { header, data })
     }
+
+    pub fn into_autospectra(self) -> AutoSpectra {
+        // package the data up
+        // transform to MHz
+        let Self { header, data } = self;
+        let freqs = header.get_freqs().map(|x| x / 1e6);
+
+        let flat_freqs = freqs.flatten().to_owned();
+
+        let spectra = data
+            .axis_iter(Axis(2))
+            .map(|arr| {
+                flat_freqs
+                    .clone()
+                    .into_iter()
+                    .zip(arr.into_iter().map(|y| *y as f64))
+                    .collect::<Vec<(f64, f64)>>()
+            })
+            .collect::<Vec<_>>();
+
+        let log_spectra = data
+            .axis_iter(Axis(2))
+            .map(|arr| {
+                flat_freqs
+                    .clone()
+                    .into_iter()
+                    .zip(arr.into_iter().map(|y| 10.0 * (*y as f64).log10()))
+                    .collect::<Vec<(f64, f64)>>()
+            })
+            .collect::<Vec<_>>();
+
+        let descriptions = header.stokes_format.desription();
+
+        AutoSpectra {
+            freq_min: freqs.fold(f64::INFINITY, |a, &b| a.min(b)),
+            freq_max: freqs.fold(f64::NEG_INFINITY, |a, &b| a.max(b)),
+            ant_names: descriptions,
+            spectra,
+            log_spectra,
+            plot_log: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DiskLoader {
+    /// File to read spectra from
+    file: PathBuf,
+}
+impl DiskLoader {
+    pub fn new(input_file: PathBuf) -> Self {
+        Self { file: input_file }
+    }
+}
+#[async_trait]
+impl SpectrumLoader for DiskLoader {
+    async fn get_data(&mut self) -> Option<AutoSpectra> {
+        let mut file_handle = BufReader::new(
+            fs::OpenOptions::new()
+                .read(true)
+                .open(&self.file)
+                .with_context(|| format!("Unable to open {}", self.file.display()))
+                .ok()?,
+        );
+
+        Some(
+            DRSpectrum::from_bytes(&mut file_handle)
+                .ok()?
+                .into_autospectra(),
+        )
+    }
+
+    /// Filters the antennas to be plotted based on their string names.
+    fn filter_antenna(&mut self, _antenna_number: &[String]) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A Spectrum loader for the LWA North Arm
@@ -540,30 +618,7 @@ impl SpectrumLoader for DRLoader {
             self.find_lastest_file().ok()?;
             self.get_data().await
         } else {
-            // package the data up
-            // transform to MHz
-            let DRSpectrum { header, data } = spectra;
-            let freqs = header.get_freqs().map(|x| x / 1e6);
-
-            let flat_freqs = freqs.flatten().to_owned();
-
-            let spec_data = data
-                .axis_iter(Axis(2))
-                .map(|arr| {
-                    flat_freqs
-                        .clone()
-                        .into_iter()
-                        .zip(arr.into_iter().map(|y| 10.0 * (*y as f64).log10()))
-                        .collect::<Vec<(f64, f64)>>()
-                })
-                .collect::<Vec<_>>();
-
-            Some(AutoSpectra {
-                freq_min: freqs.fold(f64::INFINITY, |a, &b| a.min(b)),
-                freq_max: freqs.fold(f64::NEG_INFINITY, |a, &b| a.max(b)),
-                ant_names: header.stokes_format.desription(),
-                spectra: spec_data,
-            })
+            Some(spectra.into_autospectra())
         }
     }
 

@@ -17,7 +17,7 @@ use ratatui::{
 };
 use tui_logger::{init_logger, set_default_level};
 
-#[cfg(feature = "ovro")]
+#[cfg(any(feature = "ovro", feature = "lwa-na"))]
 use std::path::PathBuf;
 
 mod app;
@@ -29,6 +29,7 @@ enum Action {
     Break,
     NewAnt,
     DelAnt,
+    ToggleLog,
 }
 impl Action {
     pub fn from_event(event: KeyEvent) -> Option<Self> {
@@ -59,6 +60,10 @@ impl Action {
                 kind: _,
                 state: _,
             } => Some(Self::Break),
+            KeyEvent {
+                code: KeyCode::Char('l'),
+                ..
+            } => Some(Self::ToggleLog),
             _ => None,
         }
     }
@@ -77,19 +82,24 @@ impl Action {
                 Cell::from(Span::styled("d", key_style)),
                 Cell::from(Span::styled("Remove Antenna", help_style)),
             ]),
+            Row::new(vec![
+                Cell::from(Span::styled("l", key_style)),
+                Cell::from(Span::styled("Toggle dB", help_style)),
+            ]),
         ]
     }
 }
 
 #[derive(Debug, Subcommand, Clone)]
 enum TuiType {
-    #[cfg(not(any(feature = "ovro")))]
+    #[cfg(not(any(feature = "ovro", feature = "lwa-na")))]
     #[clap(name = "no-op")]
     Noop,
-    #[cfg(feature = "ovro")]
+    #[cfg(any(feature = "ovro", feature = "lwa-na"))]
     #[clap(arg_required_else_help = true)]
     /// Plot spectra from an RFIMonitorTool output npy file
     File {
+        #[cfg(feature = "ovro")]
         #[clap(short = 'n', required = true)]
         /// The number of antenna spectra to load
         nspectra: usize,
@@ -97,10 +107,11 @@ enum TuiType {
         /// Numpy save file from the RFIMonitor
         input_file: PathBuf,
     },
-    #[cfg(feature = "ovro")]
     #[clap(arg_required_else_help = true)]
     /// Watch live autospectra from the correlator
+    #[cfg(any(feature = "ovro", feature = "lwa-na"))]
     Live {
+        #[cfg(feature = "ovro")]
         #[clap( num_args = 1.., value_delimiter = ' ')]
         /// The Antenna Name(s) to grab autos
         ///
@@ -110,6 +121,11 @@ enum TuiType {
         ///
         /// This can also be a space separated list of antennas: LWA-124 LWA-250 ...etc
         antenna: Vec<String>,
+
+        #[cfg(feature = "lwa-na")]
+        #[clap()]
+        /// The hostname of the data recorder from which spectra will be loaded.
+        data_recorder: String,
 
         #[clap(long, short, default_value_t = 30)]
         /// The interval in seconds at which to poll for new autos

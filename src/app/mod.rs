@@ -19,8 +19,11 @@ use ratatui::{
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::{StreamExt, StreamMap};
 
+#[cfg(feature = "lwa-na")]
+use crate::loader::north_arm::{DRLoader, DiskLoader as NADiskLoader};
+
 #[cfg(feature = "ovro")]
-use crate::loader::ovro::{DiskLoader, EtcdLoader};
+use crate::loader::ovro::{DiskLoader as OvroDiskLoader, EtcdLoader};
 
 // otherwise clippy complains about the Trait import
 #[allow(unused_imports)]
@@ -58,6 +61,7 @@ pub(crate) struct App {
     antenna_filter: AntennaFilter,
 
     /// Spectra to be plotted on the next draw
+    ///
     spectra: Option<AutoSpectra>,
     /// The ambient refresh tick if nothing happens
     refresh_rate: Duration,
@@ -198,7 +202,7 @@ impl App {
 
         tokio::spawn(async move {
             match backend {
-                #[cfg(not(any(feature = "ovro")))]
+                #[cfg(not(any(feature = "ovro", feature = "lwa-na")))]
                 TuiType::Noop => {
                     sender
                         .send(AutoSpectra {
@@ -209,19 +213,27 @@ impl App {
                         })
                         .await?;
                 }
-                #[cfg(feature = "ovro")]
+                #[cfg(any(feature = "ovro", feature = "lwa-na"))]
                 TuiType::File {
+                    #[cfg(feature = "ovro")]
                     nspectra,
                     input_file,
                 } => {
-                    let mut data_loader = DiskLoader::new(input_file);
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature = "ovro")]{
+                            let mut data_loader = OvroDiskLoader::new(input_file);
+                            data_loader.filter_antenna(
+                                (0..nspectra)
+                                    .map(|s| format!("{s}"))
+                                    .collect::<Vec<_>>()
+                                    .as_slice(),
+                            )?;
 
-                    data_loader.filter_antenna(
-                        (0..nspectra)
-                            .map(|s| format!("{s}"))
-                            .collect::<Vec<_>>()
-                            .as_slice(),
-                    )?;
+                        } else if #[cfg(feature = "lwa-na")] {
+                            let mut data_loader = NADiskLoader::new(input_file);
+
+                        }
+                    }
 
                     if let Some(spec) = data_loader.get_data().await {
                         sender.send(spec).await?;
@@ -231,10 +243,27 @@ impl App {
                         data_loader.filter_antenna(&filter)?;
                     }
                 }
-                #[cfg(feature = "ovro")]
-                TuiType::Live { antenna, delay } => {
-                    let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
-                    data_loader.filter_antenna(&antenna)?;
+                #[cfg(any(feature = "ovro", feature = "lwa-na"))]
+                TuiType::Live {
+                    #[cfg(feature = "ovro")]
+                    antenna,
+                    #[cfg(feature = "lwa-na")]
+                    data_recorder,
+                    delay,
+                } => {
+                    cfg_if::cfg_if! {
+                        if #[cfg(feature = "ovro")]{
+                            let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
+                            data_loader.filter_antenna(&antenna)?;
+
+                        } else if #[cfg(feature = "lwa-na")] {
+                            let mut data_loader = DRLoader::new(&data_recorder).with_context(|| {
+                                format!("Error Connecting to data recorder {data_recorder}")
+                            })?;
+
+                        }
+                    }
+
                     let mut interval = tokio::time::interval(Duration::from_secs(delay));
 
                     loop {
@@ -355,6 +384,10 @@ impl App {
     // Submit the antenna to the backend but also reset to plotter mode
     async fn submit_antenna_filter(&mut self) -> Result<()> {
         let new_ant = self.input.trim().to_uppercase().to_owned();
+        if new_ant.is_empty() {
+            info!("Invalide antenna name...Skipping");
+            return Ok(());
+        }
         info!("Adding Antenna {new_ant:?}");
         self.antenna_filter.items.push(new_ant);
 
@@ -422,6 +455,12 @@ impl App {
                                         Action::NewAnt => self.input_mode = InputMode::AntennaInput,
                                         Action::DelAnt => {
                                             self.input_mode = InputMode::RemoveAntenna
+                                        }
+                                        Action::ToggleLog => {
+                                            // toggle the switch
+                                            if let Some(spectra) = self.spectra.as_mut() {
+                                                spectra.plot_log = !spectra.plot_log;
+                                            }
                                         }
                                     }
                                 }

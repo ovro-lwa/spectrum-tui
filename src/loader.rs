@@ -13,6 +13,8 @@ pub struct AutoSpectra {
     pub freq_max: f64,
     pub ant_names: Vec<String>,
     pub spectra: Vec<Vec<(f64, f64)>>,
+    pub log_spectra: Vec<Vec<(f64, f64)>>,
+    pub plot_log: bool,
 }
 
 #[async_trait]

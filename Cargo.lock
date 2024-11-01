@@ -1821,6 +1821,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "byteorder",
+ "cfg-if",
  "clap",
  "crossterm 0.26.1",
  "curl",

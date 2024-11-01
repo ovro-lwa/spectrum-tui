@@ -50,13 +50,30 @@ impl DiskLoader {
 #[async_trait]
 impl SpectrumLoader for DiskLoader {
     async fn get_data(&mut self) -> Option<AutoSpectra> {
+        log::debug!("Opening: {}", self.file.display());
         let data: Array<f64, Ix2> = read_npy(&self.file).expect("unabe to read.");
+        log::debug!("data reading complete.");
 
         let len = data.shape()[1];
         let xs = Array::linspace(0.0, 98.3, len);
         let xmin = xs.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let xmax = xs.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        log::debug!("Absolute spectra calculating");
+
         let spectra = data
+            .outer_iter()
+            .filter(|inner| !inner.iter().all(|y| y.is_nan()))
+            .take(2 * self.n_spectra)
+            .map(|inner| {
+                Zip::from(inner)
+                    .and(&xs)
+                    .map_collect(|y, x| (*x, *y))
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+
+        log::debug!("Calculating log spectra");
+        let log_spectra = data
             .outer_iter()
             .filter(|inner| !inner.iter().all(|y| y.is_nan()))
             .take(2 * self.n_spectra)
@@ -79,6 +96,8 @@ impl SpectrumLoader for DiskLoader {
             freq_max: xmax,
             ant_names,
             spectra,
+            log_spectra,
+            plot_log: true,
         };
 
         Some(data)
@@ -318,13 +337,24 @@ impl EtcdLoader {
 #[async_trait]
 impl SpectrumLoader for EtcdLoader {
     async fn get_data(&mut self) -> Option<AutoSpectra> {
-        let spectra = self.request_autos().await.ok()?;
+        let dataset = self.request_autos().await.ok()?;
 
-        let xs = Array::linspace(0.0, 98.3, spectra.shape()[1]);
+        let xs = Array::linspace(0.0, 98.3, dataset.shape()[1]);
         let xmin = xs.iter().fold(f64::INFINITY, |a, &b| a.min(b));
         let xmax = xs.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
 
-        let spectra = spectra
+        let spectra = dataset
+            .outer_iter()
+            .filter(|inner| !inner.iter().all(|y| y.is_nan()))
+            .map(|inner| {
+                Zip::from(inner)
+                    .and(&xs)
+                    .map_collect(|y, x| (*x, *y))
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+
+        let log_spectra = dataset
             .outer_iter()
             .filter(|inner| !inner.iter().all(|y| y.is_nan()))
             .map(|inner| {
@@ -349,6 +379,8 @@ impl SpectrumLoader for EtcdLoader {
             freq_max: xmax,
             ant_names,
             spectra,
+            log_spectra,
+            plot_log: true,
         };
 
         Some(data)
