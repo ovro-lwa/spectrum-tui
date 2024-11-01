@@ -1,8 +1,8 @@
-use core::f64;
-
 use ndarray::Array;
+#[cfg(feature="ovro")]
+use ratatui::layout::{Flex, Layout, Rect};
 use ratatui::{
-    layout::{Alignment, Constraint, Flex, Layout, Rect},
+    layout::{Alignment, Constraint},
     style::{Color, Modifier, Style},
     symbols,
     text::Span,
@@ -83,17 +83,9 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
     let xmin = data.map_or(0.0, |x| x.freq_min);
     let xmax = data.map_or(10.0, |x| x.freq_max);
 
-    let ymin = data.map_or(-120.0, |x| {
-        x.spectra.iter().fold(f64::INFINITY, |a, b| {
-            a.min(b.iter().fold(f64::INFINITY, |c, d| c.min(d.1)))
-        })
-    }) - 10.0;
+    let ymin = data.map_or(-120.0, |x| x.ymin());
 
-    let ymax = data.map_or(-20.0, |x| {
-        x.spectra.iter().fold(f64::NEG_INFINITY, |a, b| {
-            a.max(b.iter().fold(f64::NEG_INFINITY, |c, d| c.max(d.1)))
-        })
-    }) + 10.0;
+    let ymax = data.map_or(-20.0, |x| x.ymax());
 
     let ylabels = Array::linspace(ymin, ymax, 11)
         .iter()
@@ -138,6 +130,7 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
         )
 }
 
+#[cfg(feature = "ovro")]
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
 pub(crate) fn center_popup(area: Rect, horizontal: Constraint, vertical: Constraint) -> Rect {
     let [area] = Layout::horizontal([horizontal])

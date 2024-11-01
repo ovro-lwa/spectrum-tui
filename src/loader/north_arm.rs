@@ -267,7 +267,7 @@ pub(crate) struct DRSpectrum {
     /// Metadata information about this spectrum
     pub header: DRHeader,
 
-    pub data: Array<f32, Ix3>,
+    pub data: Array<f64, Ix3>,
 }
 impl DRSpectrum {
     /// Locates the next spectrum in the file and sets the cursor position
@@ -328,7 +328,7 @@ impl DRSpectrum {
                     chunk
                         .try_into()
                         .expect("Unable to coerce len 4 slice into array."),
-                )
+                ) as f64
             }))
             .to_shape(data_shape)
             .with_context(|| format!("Unable to coerce data vec into shape: {data_shape:?}"))?
@@ -340,8 +340,8 @@ impl DRSpectrum {
             let tmp_norms = header
                 .fills
                 .iter()
-                .map(|f| *f as f32 * header.n_freqs as f32)
-                .collect::<Vec<f32>>();
+                .map(|f| *f as f64 * header.n_freqs as f64)
+                .collect::<Vec<f64>>();
 
             let pre_array = match header.stokes_format {
                 PolarizationType::LinearXX => vec![tmp_norms[0], tmp_norms[2]],
@@ -412,42 +412,19 @@ impl DRSpectrum {
         // package the data up
         // transform to MHz
         let Self { header, data } = self;
+        let descriptions = header.stokes_format.desription();
         let freqs = header.get_freqs().map(|x| x / 1e6);
+
+        let mut data_out =
+            Array::<f64, Ix2>::zeros((descriptions.len(), 2 * header.n_freqs as usize));
+
+        for (mut inner_data_out, polarization_data) in data_out.outer_iter_mut().zip(data.axis_iter(Axis(2))) {
+            inner_data_out.assign(&polarization_data.flatten());
+        }
 
         let flat_freqs = freqs.flatten().to_owned();
 
-        let spectra = data
-            .axis_iter(Axis(2))
-            .map(|arr| {
-                flat_freqs
-                    .clone()
-                    .into_iter()
-                    .zip(arr.into_iter().map(|y| *y as f64))
-                    .collect::<Vec<(f64, f64)>>()
-            })
-            .collect::<Vec<_>>();
-
-        let log_spectra = data
-            .axis_iter(Axis(2))
-            .map(|arr| {
-                flat_freqs
-                    .clone()
-                    .into_iter()
-                    .zip(arr.into_iter().map(|y| 10.0 * (*y as f64).log10()))
-                    .collect::<Vec<(f64, f64)>>()
-            })
-            .collect::<Vec<_>>();
-
-        let descriptions = header.stokes_format.desription();
-
-        AutoSpectra {
-            freq_min: freqs.fold(f64::INFINITY, |a, &b| a.min(b)),
-            freq_max: freqs.fold(f64::NEG_INFINITY, |a, &b| a.max(b)),
-            ant_names: descriptions,
-            spectra,
-            log_spectra,
-            plot_log: false,
-        }
+        AutoSpectra::new(descriptions, flat_freqs, data_out, false)
     }
 }
 
@@ -684,7 +661,9 @@ mod test {
         let expected_data: Array<f32, Ix3> =
             ndarray_npy::read_npy(normalized_data_file).expect("unabe to read formatted data.");
 
-        assert!(expected_data.abs_diff_eq(&spectrum.data, 1e-3))
+        let expected_data = expected_data.mapv(|x| x as f64);
+
+        assert!(expected_data.abs_diff_eq(&spectrum.data, 1e-5))
     }
 
     #[test]

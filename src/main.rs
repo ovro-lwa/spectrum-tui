@@ -27,7 +27,9 @@ mod loader;
 
 enum Action {
     Break,
+    #[cfg(feature = "ovro")]
     NewAnt,
+    #[cfg(feature = "ovro")]
     DelAnt,
     ToggleLog,
 }
@@ -36,12 +38,14 @@ impl Action {
         trace!("Event::{:?}\r", event);
 
         match event {
+            #[cfg(feature = "ovro")]
             KeyEvent {
                 code: KeyCode::Char('a'),
                 modifiers: KeyModifiers::NONE,
                 kind: _,
                 state: _,
             } => Some(Self::NewAnt),
+            #[cfg(feature = "ovro")]
             KeyEvent {
                 code: KeyCode::Char('d'),
                 modifiers: KeyModifiers::NONE,
@@ -74,10 +78,12 @@ impl Action {
                 Cell::from(Span::styled("<Esc>/q", key_style)),
                 Cell::from(Span::styled("Quit", help_style)),
             ]),
+            #[cfg(feature = "ovro")]
             Row::new(vec![
                 Cell::from(Span::styled("a", key_style)),
                 Cell::from(Span::styled("Add New Antenna", help_style)),
             ]),
+            #[cfg(feature = "ovro")]
             Row::new(vec![
                 Cell::from(Span::styled("d", key_style)),
                 Cell::from(Span::styled("Remove Antenna", help_style)),

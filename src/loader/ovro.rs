@@ -4,7 +4,7 @@ use etcd_client::{Client, WatchOptions};
 use futures::StreamExt;
 use itertools::Itertools;
 use log::info;
-use ndarray::{concatenate, Array, Axis, Ix2, Zip};
+use ndarray::{concatenate, Array, Axis, Ix2};
 use ndarray_npy::read_npy;
 use serde_json::{json, Value};
 use std::{collections::HashSet, path::PathBuf, time::SystemTime};
@@ -50,40 +50,20 @@ impl DiskLoader {
 #[async_trait]
 impl SpectrumLoader for DiskLoader {
     async fn get_data(&mut self) -> Option<AutoSpectra> {
-        log::debug!("Opening: {}", self.file.display());
         let data: Array<f64, Ix2> = read_npy(&self.file).expect("unabe to read.");
-        log::debug!("data reading complete.");
+        let nfreqs = data.shape()[1];
 
-        let len = data.shape()[1];
-        let xs = Array::linspace(0.0, 98.3, len);
-        let xmin = xs.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let xmax = xs.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-        log::debug!("Absolute spectra calculating");
+        let mut data_out = Array::<f64, Ix2>::zeros((2 * self.n_spectra, nfreqs));
+        for (mut inner_data_out, good_inner) in data_out.outer_iter_mut().zip(
+            data.outer_iter()
+                .filter(|inner| !inner.iter().all(|y| y.is_nan() || y <= &0.0))
+                .take(2 * self.n_spectra),
+        ) {
+            inner_data_out.assign(&good_inner);
+        }
 
-        let spectra = data
-            .outer_iter()
-            .filter(|inner| !inner.iter().all(|y| y.is_nan()))
-            .take(2 * self.n_spectra)
-            .map(|inner| {
-                Zip::from(inner)
-                    .and(&xs)
-                    .map_collect(|y, x| (*x, *y))
-                    .to_vec()
-            })
-            .collect::<Vec<_>>();
+        let xs = Array::linspace(0.0, 98.3, nfreqs);
 
-        log::debug!("Calculating log spectra");
-        let log_spectra = data
-            .outer_iter()
-            .filter(|inner| !inner.iter().all(|y| y.is_nan()))
-            .take(2 * self.n_spectra)
-            .map(|inner| {
-                Zip::from(inner)
-                    .and(&xs)
-                    .map_collect(|y, x| (*x, 10.0 * y.log10()))
-                    .to_vec()
-            })
-            .collect::<Vec<_>>();
         let ant_names = (0..(2 * self.n_spectra))
             .map(|x| match x % 2 == 0 {
                 true => (x / 2).to_string() + "A",
@@ -91,16 +71,7 @@ impl SpectrumLoader for DiskLoader {
             })
             .collect::<Vec<_>>();
 
-        let data = AutoSpectra {
-            freq_min: xmin,
-            freq_max: xmax,
-            ant_names,
-            spectra,
-            log_spectra,
-            plot_log: true,
-        };
-
-        Some(data)
+        Some(AutoSpectra::new(ant_names, xs, data_out, true))
     }
 
     fn filter_antenna(&mut self, antenna_number: &[String]) -> Result<()> {
@@ -337,33 +308,10 @@ impl EtcdLoader {
 #[async_trait]
 impl SpectrumLoader for EtcdLoader {
     async fn get_data(&mut self) -> Option<AutoSpectra> {
-        let dataset = self.request_autos().await.ok()?;
+        let data = self.request_autos().await.ok()?;
+        let n_specs = data.shape()[0];
 
-        let xs = Array::linspace(0.0, 98.3, dataset.shape()[1]);
-        let xmin = xs.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-        let xmax = xs.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-
-        let spectra = dataset
-            .outer_iter()
-            .filter(|inner| !inner.iter().all(|y| y.is_nan()))
-            .map(|inner| {
-                Zip::from(inner)
-                    .and(&xs)
-                    .map_collect(|y, x| (*x, *y))
-                    .to_vec()
-            })
-            .collect::<Vec<_>>();
-
-        let log_spectra = dataset
-            .outer_iter()
-            .filter(|inner| !inner.iter().all(|y| y.is_nan()))
-            .map(|inner| {
-                Zip::from(inner)
-                    .and(&xs)
-                    .map_collect(|y, x| (*x, 10.0 * y.log10()))
-                    .to_vec()
-            })
-            .collect::<Vec<_>>();
+        let xs = Array::linspace(0.0, 98.3, data.shape()[1]);
 
         let ant_names = if let Some(all_info) = self.filter.as_ref() {
             all_info
@@ -371,19 +319,10 @@ impl SpectrumLoader for EtcdLoader {
                 .flat_map(|info| [format!("{}a", info.antname), format!("{}b", info.antname)])
                 .collect()
         } else {
-            (0..spectra.len()).map(|x| format!("{x}")).collect()
+            (0..n_specs).map(|x| format!("{x}")).collect()
         };
 
-        let data = AutoSpectra {
-            freq_min: xmin,
-            freq_max: xmax,
-            ant_names,
-            spectra,
-            log_spectra,
-            plot_log: true,
-        };
-
-        Some(data)
+        Some(AutoSpectra::new(ant_names, xs, data, true))
     }
 
     fn filter_antenna(&mut self, antenna_number: &[String]) -> Result<()> {
