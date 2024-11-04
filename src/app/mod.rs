@@ -101,6 +101,8 @@ pub(crate) struct App {
     character_index: usize,
     /// Tracks if we're adding to the Antenna filter or not
     input_mode: InputMode,
+
+    log_plot: Option<bool>,
 }
 #[cfg(feature = "ovro")]
 impl App {
@@ -241,6 +243,7 @@ impl App {
             input: String::new(),
             #[cfg(feature = "ovro")]
             character_index: 0,
+            log_plot: None,
         }
     }
 
@@ -262,6 +265,12 @@ impl App {
 
         // Title
         frame.render_widget(ui::draw_title(), chunks[0]);
+
+        if let Some(log) = self.log_plot {
+            if let Some(spec) = self.spectra.as_mut() {
+                spec.plot_log = log;
+            }
+        }
 
         frame.render_widget(ui::draw_charts(self.spectra.as_ref()), chunks[1]);
 
@@ -518,8 +527,8 @@ impl App {
                                         }
                                         Action::ToggleLog => {
                                             // toggle the switch
-                                            if let Some(spectra) = self.spectra.as_mut() {
-                                                spectra.plot_log = !spectra.plot_log;
+                                            if let Some(log) = self.log_plot.as_mut() {
+                                                *log = !*log;
                                             }
                                         }
                                     }
@@ -564,6 +573,9 @@ impl App {
                 }
                 StreamReturn::Data(data) => {
                     info!("Received New autosprectra.");
+                    if self.log_plot.is_none() {
+                        self.log_plot = Some(data.plot_log);
+                    }
                     self.spectra.replace(data);
                 }
                 StreamReturn::Tick => {}
