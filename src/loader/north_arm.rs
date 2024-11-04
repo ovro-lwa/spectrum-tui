@@ -496,7 +496,7 @@ impl std::fmt::Debug for DRLoader {
     }
 }
 impl DRLoader {
-    pub fn new<P: AsRef<str>>(data_recorder: P) -> Result<Self> {
+    pub fn new<P: AsRef<str>, R: AsRef<Path>>(data_recorder: P, identity_file: R) -> Result<Self> {
         let data_recorder = data_recorder.as_ref();
         // Connect to the local SSH server
         let tcp = TcpStream::connect(format!("{}:22", data_recorder))
@@ -507,7 +507,7 @@ impl DRLoader {
         sess.handshake().context("SSH Handshake error")?;
 
         // Try to authenticate with the first identity in the agent.
-        sess.userauth_agent("mcsdr")
+        sess.userauth_pubkey_file("mcsdr", None, identity_file.as_ref(), None)
             .context("Error authenticating as mcsdr")?;
         // Make sure we succeeded
         ensure!(

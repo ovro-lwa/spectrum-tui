@@ -133,6 +133,17 @@ enum TuiType {
         /// The hostname of the data recorder from which spectra will be loaded.
         data_recorder: String,
 
+        #[cfg(feature = "lwa-na")]
+        #[clap(
+            long="identity-file",
+            short='i',
+            required=false,
+            default_value = "~/.ssh/id_rsa",
+            value_parser = |path: &str| expanduser::expanduser(path)
+        )]
+        /// SSH identity file used to connect to the data recorder.
+        identity_file: PathBuf,
+
         #[clap(long, short, default_value_t = 30)]
         /// The interval in seconds at which to poll for new autos
         delay: u64,

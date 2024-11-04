@@ -401,6 +401,8 @@ impl App {
                 antenna,
                 #[cfg(feature = "lwa-na")]
                 data_recorder,
+                #[cfg(feature = "lwa-na")]
+                identity_file,
                 delay,
             } => {
                 cfg_if::cfg_if! {
@@ -409,7 +411,7 @@ impl App {
                         data_loader.filter_antenna(&antenna)?;
 
                     } else if #[cfg(feature = "lwa-na")] {
-                        let mut data_loader = DRLoader::new(&data_recorder).with_context(|| {
+                        let mut data_loader = DRLoader::new(&data_recorder, identity_file).with_context(|| {
                             format!("Error Connecting to data recorder {data_recorder}")
                         })?;
 
