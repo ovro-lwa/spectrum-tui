@@ -520,7 +520,7 @@ impl DRLoader {
             filename: None,
             file_tag: None,
             sftp: sess.sftp().context("Error initializing sftp server")?,
-            last_timestamp: Epoch::now().context("Unable to initilize timestamp")?,
+            last_timestamp: Epoch::from_unix_seconds(0.0),
         };
 
         me.find_latest_file()?;
