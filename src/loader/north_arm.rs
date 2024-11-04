@@ -603,7 +603,10 @@ impl SpectrumLoader for DRLoader {
         if self.last_timestamp == spectra.header.timestamp {
             // no new data has been written, close this file and look for a new one.
             self.find_latest_file().ok()?;
-            self.get_data().await
+            self.get_latest_spectra()
+                .ok()
+                .flatten()
+                .map(|spec| spec.into_autospectra())
         } else {
             self.last_timestamp = spectra.header.timestamp;
 
