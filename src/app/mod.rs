@@ -4,12 +4,10 @@ use std::{
     time::Duration,
 };
 
-#[cfg(any(feature = "ovro", feature = "lwa-na"))]
-use anyhow::Context;
 #[cfg(not(any(feature = "ovro", feature = "lwa-na")))]
 use ndarray::{arr2, Array};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Error, Result};
 use async_stream::stream;
 use crossterm::event::{Event, EventStream};
 use futures::Stream;
@@ -19,7 +17,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     Frame, Terminal,
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::{StreamExt, StreamMap};
 
 #[cfg(feature = "lwa-na")]
@@ -34,7 +32,6 @@ use {
         style::{Color, Modifier, Style},
         widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph},
     },
-    tokio::sync::mpsc::Sender,
 };
 
 // otherwise clippy complains about the Trait import
@@ -86,11 +83,12 @@ pub(crate) struct App {
     /// Determines backend and how to load data
     data_backend: TuiType,
 
-    #[cfg(feature = "ovro")]
+    #[allow(dead_code)]
+    // we use this channel to indicate to the loader when to
+    // halt even if there is no filtering functionality
     /// Channel used to send new filters to the backend
     filter_sender: Sender<Vec<String>>,
 
-    #[cfg(feature = "ovro")]
     /// Filter receving channel to give to the SpectrumLoader backend
     filter_recv: Option<Receiver<Vec<String>>>,
 
@@ -217,7 +215,6 @@ impl App {
 
 impl App {
     pub fn new(refresh_rate: Duration, data_backend: TuiType) -> Self {
-        #[cfg(feature = "ovro")]
         let (filter_sender, filter_recv) = tokio::sync::mpsc::channel(10);
 
         #[cfg(feature = "ovro")]
@@ -226,11 +223,7 @@ impl App {
                 (0..*nspectra).map(|s| s.to_string()).collect::<Vec<_>>()
             }
             TuiType::Live { antenna, .. } => antenna.clone(),
-            // antenna.to_owned()
         };
-        // else {
-        //     (0..)
-        // };
 
         Self {
             #[cfg(feature = "ovro")]
@@ -242,9 +235,7 @@ impl App {
             refresh_rate,
             data_backend,
             input_mode: InputMode::Normal,
-            #[cfg(feature = "ovro")]
             filter_sender,
-            #[cfg(feature = "ovro")]
             filter_recv: Some(filter_recv),
             #[cfg(feature = "ovro")]
             input: String::new(),
@@ -334,61 +325,53 @@ impl App {
         }
     }
 
-    fn spawn_backend(
+    async fn spawn_backend(
         backend: TuiType,
         // make some lint exceptions to allow the no-feature
         // test compilation to work
         #[allow(unused_mut)]
         #[allow(unused_variables)]
-        #[cfg(feature = "ovro")]
         mut filter_recv: Receiver<Vec<String>>,
-    ) -> Receiver<AutoSpectra> {
+    ) -> Result<Receiver<AutoSpectra>> {
         let (sender, recvr) = tokio::sync::mpsc::channel(30);
 
-        tokio::spawn(async move {
-            match backend {
-                #[cfg(not(any(feature = "ovro", feature = "lwa-na")))]
-                TuiType::Noop => {
+        match backend {
+            #[cfg(not(any(feature = "ovro", feature = "lwa-na")))]
+            TuiType::Noop => {
+                tokio::spawn(async move {
                     sender
-                        .send(
-                            AutoSpectra::new(
-                                vec!["Test".to_owned()],
-                                Array::linspace(0.0, 200.0, 5),
-                                arr2(&[[5.0, 3.0, 1.0, 4.0, 0.33]]),
-                                false,
-                            ), // {
-                               //     freq_min: 0.0,
-                               //     freq_max: 200.0,
-                               //     ant_names: vec!["test".to_owned()],
-                               //     spectra: vec![vec![(0.0, 5.0), (10.0, 3.0), (40.0, 1.0)]],
-                               //     log_spectra: vec![vec![(0.0, -20.0), (10.0, -40.0), (40.0, -35.0)]],
-                               //     plot_log: false,
-                               // }
-                        )
+                        .send(AutoSpectra::new(
+                            vec!["Test".to_owned()],
+                            Array::linspace(0.0, 200.0, 5),
+                            arr2(&[[5.0, 3.0, 1.0, 4.0, 0.33]]),
+                            false,
+                        ))
                         .await?;
-                }
-                #[cfg(any(feature = "ovro", feature = "lwa-na"))]
-                TuiType::File {
-                    #[cfg(feature = "ovro")]
-                    nspectra,
-                    input_file,
-                } => {
-                    cfg_if::cfg_if! {
-                        if #[cfg(feature = "ovro")]{
-                            let mut data_loader = OvroDiskLoader::new(input_file);
-                            data_loader.filter_antenna(
-                                (0..nspectra)
-                                    .map(|s| format!("{s}"))
-                                    .collect::<Vec<_>>()
-                                    .as_slice(),
-                            )?;
+                    Ok::<(), Error>(())
+                });
+            }
+            #[cfg(any(feature = "ovro", feature = "lwa-na"))]
+            TuiType::File {
+                #[cfg(feature = "ovro")]
+                nspectra,
+                input_file,
+            } => {
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "ovro")]{
+                        let mut data_loader = OvroDiskLoader::new(input_file);
+                        data_loader.filter_antenna(
+                            (0..nspectra)
+                                .map(|s| format!("{s}"))
+                                .collect::<Vec<_>>()
+                                .as_slice(),
+                        )?;
 
-                        } else if #[cfg(feature = "lwa-na")] {
-                            let mut data_loader = NADiskLoader::new(input_file);
+                    } else if #[cfg(feature = "lwa-na")] {
+                        let mut data_loader = NADiskLoader::new(input_file);
 
-                        }
                     }
-
+                }
+                tokio::spawn(async move {
                     if let Some(spec) = data_loader.get_data().await {
                         sender.send(spec).await?;
                     }
@@ -400,28 +383,30 @@ impl App {
                             sender.send(spec).await?;
                         }
                     }
-                }
-                #[cfg(any(feature = "ovro", feature = "lwa-na"))]
-                TuiType::Live {
-                    #[cfg(feature = "ovro")]
-                    antenna,
-                    #[cfg(feature = "lwa-na")]
-                    data_recorder,
-                    delay,
-                } => {
-                    cfg_if::cfg_if! {
-                        if #[cfg(feature = "ovro")]{
-                            let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
-                            data_loader.filter_antenna(&antenna)?;
+                    Ok::<(), Error>(())
+                });
+            }
+            #[cfg(any(feature = "ovro", feature = "lwa-na"))]
+            TuiType::Live {
+                #[cfg(feature = "ovro")]
+                antenna,
+                #[cfg(feature = "lwa-na")]
+                data_recorder,
+                delay,
+            } => {
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "ovro")]{
+                        let mut data_loader = EtcdLoader::new("etcdv3service:2379").await?;
+                        data_loader.filter_antenna(&antenna)?;
 
-                        } else if #[cfg(feature = "lwa-na")] {
-                            let mut data_loader = DRLoader::new(&data_recorder).with_context(|| {
-                                format!("Error Connecting to data recorder {data_recorder}")
-                            })?;
+                    } else if #[cfg(feature = "lwa-na")] {
+                        let mut data_loader = DRLoader::new(&data_recorder).with_context(|| {
+                            format!("Error Connecting to data recorder {data_recorder}")
+                        })?;
 
-                        }
                     }
-
+                }
+                tokio::spawn(async move {
                     let mut interval = tokio::time::interval(Duration::from_secs(delay));
 
                     cfg_if::cfg_if! {
@@ -439,6 +424,7 @@ impl App {
                                         // force a tick now to update the data
                                         interval.reset_immediately();
                                     }
+                                    else => break,
                                 }
                             }
                         } else {
@@ -449,29 +435,31 @@ impl App {
                                             sender.send(spec).await?;
                                         }
                                     },
+                                    Some(filter) = filter_recv.recv() => {
+                                        data_loader.filter_antenna(&filter)?;
+                                        // force a tick now to update the data
+                                        interval.reset_immediately();
+                                    }
+                                    else => break,
                                 }
                             }
                         }
                     }
-                }
-            };
-            Ok::<(), anyhow::Error>(())
-        });
-        recvr
+                    Ok::<(), Error>(())
+                });
+            }
+        }
+        Ok(recvr)
     }
 
-    fn init_streams(
+    async fn init_streams(
         data_backend: TuiType,
         refresh_rate: Duration,
-        #[cfg(feature = "ovro")] filter_recv: Receiver<Vec<String>>,
-    ) -> StreamMap<&'static str, Pin<Box<dyn Stream<Item = StreamReturn> + Send>>> {
+        filter_recv: Receiver<Vec<String>>,
+    ) -> Result<StreamMap<&'static str, Pin<Box<dyn Stream<Item = StreamReturn> + Send>>>> {
         let mut stream = tokio_stream::StreamMap::new();
 
-        let mut data_recv = Self::spawn_backend(
-            data_backend,
-            #[cfg(feature = "ovro")]
-            filter_recv,
-        );
+        let mut data_recv = Self::spawn_backend(data_backend, filter_recv).await?;
 
         let data_stream = Box::pin(
             stream! {
@@ -496,7 +484,7 @@ impl App {
         stream.insert("input", reader);
         stream.insert("data", data_stream);
         stream.insert("tick", tick_stream);
-        stream
+        Ok(stream)
     }
 
     pub async fn run<W: Write>(
@@ -506,9 +494,9 @@ impl App {
         let mut stream = Self::init_streams(
             self.data_backend.clone(),
             self.refresh_rate,
-            #[cfg(feature = "ovro")]
             self.filter_recv.take().context("Antenna Filter missing.")?,
-        );
+        )
+        .await?;
 
         'plotting_loop: while let Some((_key, event)) = stream.next().await {
             match event {
