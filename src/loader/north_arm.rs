@@ -601,6 +601,7 @@ impl SpectrumLoader for DRLoader {
         .flatten()?;
 
         if self.last_timestamp == spectra.header.timestamp {
+            log::info!("Timestamp unchanged, attempting to find new file.");
             // no new data has been written, close this file and look for a new one.
             self.find_latest_file().ok()?;
             self.get_latest_spectra()
