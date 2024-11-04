@@ -43,11 +43,15 @@ impl PolarizationType {
             0x02 => Some(Self::LinearXYReRe),
             0x04 => Some(Self::LinearXYIm),
             0x08 => Some(Self::LinearYY),
+            0x09 => Some(Self::LinearRealHalf),
+            0x0a => Some(Self::LinearOtherHalf),
             0x0f => Some(Self::LinearFull),
             0x10 => Some(Self::StokesI),
             0x20 => Some(Self::StokesQ),
             0x40 => Some(Self::StokesU),
             0x80 => Some(Self::StokesV),
+            0x90 => Some(Self::StokesRealHalf),
+            0xa0 => Some(Self::StokesOtherHalf),
             0xf0 => Some(Self::StokesFull),
             _ => None,
         }
@@ -418,7 +422,9 @@ impl DRSpectrum {
         let mut data_out =
             Array::<f64, Ix2>::zeros((descriptions.len(), 2 * header.n_freqs as usize));
 
-        for (mut inner_data_out, polarization_data) in data_out.outer_iter_mut().zip(data.axis_iter(Axis(2))) {
+        for (mut inner_data_out, polarization_data) in
+            data_out.outer_iter_mut().zip(data.axis_iter(Axis(2)))
+        {
             inner_data_out.assign(&polarization_data.flatten());
         }
 
