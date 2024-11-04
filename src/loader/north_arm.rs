@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use byteorder::{LittleEndian, ReadBytesExt};
 use hifitime::Epoch;
 use ndarray::{Array, Axis, Ix1, Ix2, Ix3};
-use ssh2::{Session, Sftp};
+use ssh2::{ErrorCode, Session, Sftp};
 
 use crate::loader::{AutoSpectra, SpectrumLoader};
 
@@ -528,7 +528,7 @@ impl DRLoader {
         Ok(me)
     }
 
-    fn get_file<P: AsRef<Path>>(&mut self, pathname: P) -> Result<Option<PathBuf>> {
+    fn get_file<P: AsRef<Path>>(&mut self, pathname: P) -> Result<Option<PathBuf>, ssh2::Error> {
         Ok(self
             .sftp
             .readdir(pathname.as_ref())?
@@ -560,8 +560,16 @@ impl DRLoader {
                 ),
             ];
             for path in paths_to_check {
-                if let Some(remote_path) = self.get_file(path)? {
-                    break 'file_block Some(remote_path);
+                match self.get_file(path) {
+                    Ok(Some(remote_path)) => {
+                        break 'file_block Some(remote_path);
+                    }
+                    Ok(None) => {}
+                    // error code 2 is a No Such file. This is the most likely
+                    // case for one of the two paths not existing.
+                    Err(err) if err.code() == ErrorCode::SFTP(2) => {}
+                    // any other kind of error we propagate
+                    Err(err) => return Err(err.into()),
                 }
             }
             None
