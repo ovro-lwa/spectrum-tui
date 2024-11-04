@@ -523,12 +523,12 @@ impl DRLoader {
             last_timestamp: Epoch::now().context("Unable to initilize timestamp")?,
         };
 
-        me.find_lastest_file()?;
+        me.find_latest_file()?;
 
         Ok(me)
     }
 
-    fn find_lastest_file(&mut self) -> Result<()> {
+    fn find_latest_file(&mut self) -> Result<()> {
         self.filename = self
             .sftp
             .readdir(Path::new("/LWA_STORAGE/Internal/"))?
@@ -568,7 +568,11 @@ impl DRLoader {
                 .with_context(|| format!("Error opening remote file: {}", filename.display()))?;
             let mut reader = BufReader::new(file_handle);
 
-            DRSpectrum::read_last_spectrum(&mut reader).map(Some)
+            let res = DRSpectrum::read_last_spectrum(&mut reader).map(Some);
+            if let Err(ref err) = res {
+                log::error!("Error reading specutrm file: {err}");
+            }
+            res
         } else {
             Ok(None)
         }
@@ -598,9 +602,11 @@ impl SpectrumLoader for DRLoader {
 
         if self.last_timestamp == spectra.header.timestamp {
             // no new data has been written, close this file and look for a new one.
-            self.find_lastest_file().ok()?;
+            self.find_latest_file().ok()?;
             self.get_data().await
         } else {
+            self.last_timestamp = spectra.header.timestamp;
+
             Some(spectra.into_autospectra())
         }
     }
