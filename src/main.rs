@@ -146,10 +146,18 @@ struct Cli {
     tv_type: TuiType,
 }
 
+fn get_log_level() -> LevelFilter {
+    std::env::var("LOG")
+        .or(std::env::var("RUST_LOG"))
+        .ok()
+        .and_then(|level| <LevelFilter as std::str::FromStr>::from_str(&level).ok())
+        .unwrap_or(LevelFilter::Info)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_logger(LevelFilter::Trace).unwrap();
-    set_default_level(LevelFilter::Info);
+    set_default_level(get_log_level());
 
     let cli = Cli::parse();
 
