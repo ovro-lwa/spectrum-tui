@@ -528,10 +528,10 @@ impl DRLoader {
         Ok(me)
     }
 
-    fn find_latest_file(&mut self) -> Result<()> {
-        self.filename = self
+    fn get_file<P: AsRef<Path>>(&mut self, pathname: P) -> Result<Option<PathBuf>> {
+        Ok(self
             .sftp
-            .readdir(Path::new("/LWA_STORAGE/Internal/"))?
+            .readdir(pathname.as_ref())?
             .into_iter()
             .filter_map(|(path, stat)| if stat.is_dir() { Some(path) } else { None })
             .map(|path| self.sftp.readdir(&path.join("DROS/Spec/")))
@@ -545,7 +545,27 @@ impl DRLoader {
                         .map_or(false, |name| name.starts_with("0"))
             })
             .max_by_key(|(_path1, stat1)| stat1.mtime.unwrap_or(0))
-            .map(|(path, _stat)| path);
+            .map(|(path, _stat)| path))
+    }
+
+    fn find_latest_file(&mut self) -> Result<()> {
+        self.filename = 'file_block: {
+            let paths_to_check = [
+                "/LWA_STORAGE/Internal/",
+                // Paht may have an extra DR# in the name since
+                // multiple data recorders can run on the same machine.
+                &format!(
+                    "/LWA_STORAGE/{}/Internal/",
+                    self.data_recorder.to_uppercase()
+                ),
+            ];
+            for path in paths_to_check {
+                if let Some(remote_path) = self.get_file(path)? {
+                    break 'file_block Some(remote_path);
+                }
+            }
+            None
+        };
 
         if let Some(path) = &self.filename {
             self.file_tag = path
