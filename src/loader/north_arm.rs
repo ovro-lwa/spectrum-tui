@@ -219,6 +219,56 @@ impl DRHeader {
         Self::from_bytes(&mut buffer)
     }
 
+    /// Calculate the % of integrations that are saturated per pol per tuning
+    pub fn calc_saturation(&self) -> Vec<f64> {
+        let tmp_sats = self
+            .saturation_count
+            .map(|x| x as f64 / (self.n_ints as f64 * self.n_freqs as f64));
+        match self.stokes_format {
+            PolarizationType::LinearXX => vec![tmp_sats[0], tmp_sats[2]],
+            PolarizationType::LinearXYReRe | PolarizationType::LinearXYIm => {
+                vec![tmp_sats[0].max(tmp_sats[1]), tmp_sats[2].max(tmp_sats[3])]
+            }
+            PolarizationType::LinearYY => vec![tmp_sats[1], tmp_sats[3]],
+            PolarizationType::LinearRealHalf => tmp_sats.to_vec(),
+            PolarizationType::LinearOtherHalf => {
+                let sat1 = tmp_sats[0].max(tmp_sats[1]);
+                let sat2 = tmp_sats[2].max(tmp_sats[3]);
+                vec![sat1, sat1, sat2, sat2]
+            }
+            PolarizationType::LinearFull => {
+                let sat1 = tmp_sats[0].max(tmp_sats[1]);
+                let sat2 = tmp_sats[2].max(tmp_sats[3]);
+                vec![
+                    tmp_sats[0],
+                    sat1,
+                    sat1,
+                    tmp_sats[1],
+                    tmp_sats[2],
+                    sat2,
+                    sat2,
+                    tmp_sats[3],
+                ]
+            }
+            PolarizationType::StokesI
+            | PolarizationType::StokesQ
+            | PolarizationType::StokesU
+            | PolarizationType::StokesV => {
+                vec![tmp_sats[0].max(tmp_sats[1]), tmp_sats[2].max(tmp_sats[3])]
+            }
+            PolarizationType::StokesRealHalf | PolarizationType::StokesOtherHalf => {
+                let sat1 = tmp_sats[0].max(tmp_sats[1]);
+                let sat2 = tmp_sats[2].max(tmp_sats[3]);
+                vec![sat1, sat1, sat2, sat2]
+            }
+            PolarizationType::StokesFull => {
+                let sat1 = tmp_sats[0].max(tmp_sats[1]);
+                let sat2 = tmp_sats[2].max(tmp_sats[3]);
+                vec![sat1, sat1, sat1, sat1, sat2, sat2, sat2, sat2]
+            }
+        }
+    }
+
     fn calc_freq(tunings: u32) -> f64 {
         tunings as f64 * Self::CLOCK_SPEED / 2_f64.powi(32)
     }
@@ -349,7 +399,7 @@ impl DRSpectrum {
 
             let pre_array = match header.stokes_format {
                 PolarizationType::LinearXX => vec![tmp_norms[0], tmp_norms[2]],
-                PolarizationType::LinearYY => vec![tmp_norms[1], tmp_norms[2]],
+                PolarizationType::LinearYY => vec![tmp_norms[1], tmp_norms[3]],
                 PolarizationType::LinearXYReRe | PolarizationType::LinearXYIm => vec![
                     tmp_norms[0].min(tmp_norms[1]),
                     tmp_norms[2].min(tmp_norms[3]),
@@ -416,7 +466,15 @@ impl DRSpectrum {
         // package the data up
         // transform to MHz
         let Self { header, data } = self;
-        let descriptions = header.stokes_format.desription();
+        let descriptions: Vec<String> = {
+            header
+                .stokes_format
+                .desription()
+                .iter()
+                .zip(header.calc_saturation().iter())
+                .map(|(desc, sat)| format!("{desc:<6 } {:.2}", sat * 100.0))
+                .collect()
+        };
         let freqs = header.get_freqs().map(|x| x / 1e6);
 
         let mut data_out =

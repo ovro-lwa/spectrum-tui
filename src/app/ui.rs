@@ -1,5 +1,5 @@
 use ndarray::Array;
-#[cfg(feature="ovro")]
+#[cfg(feature = "ovro")]
 use ratatui::layout::{Flex, Layout, Rect};
 use ratatui::{
     layout::{Alignment, Constraint},
