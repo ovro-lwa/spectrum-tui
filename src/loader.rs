@@ -69,9 +69,11 @@ impl AutoSpectra {
             false => &self.spectra,
         };
 
-        data_to_min.iter().fold(f64::INFINITY, |a, b| {
+        let tmp = data_to_min.iter().fold(f64::INFINITY, |a, b| {
             a.min(b.iter().fold(f64::INFINITY, |c, &d| c.min(d.1)))
-        }) - 10.0
+        });
+        //  give a 10% margin
+        tmp - 0.1 * tmp.abs()
     }
 
     pub fn ymax(&self) -> f64 {
@@ -80,9 +82,11 @@ impl AutoSpectra {
             false => &self.spectra,
         };
 
-        data_to_max.iter().fold(f64::NEG_INFINITY, |a, b| {
+        let tmp = data_to_max.iter().fold(f64::NEG_INFINITY, |a, b| {
             a.max(b.iter().fold(f64::NEG_INFINITY, |c, &d| c.max(d.1)))
-        }) + 10.0
+        });
+        // give a 10% margin
+        tmp + 0.1 * tmp.abs()
     }
 }
 
