@@ -37,6 +37,9 @@ impl AutoSpectra {
                     .and(&freqs)
                     .map_collect(|y, x| (*x, 10.0 * y.log10()))
                     .to_vec()
+                    .into_iter()
+                    .filter(|(_freq, val)| val.is_finite())
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
 
