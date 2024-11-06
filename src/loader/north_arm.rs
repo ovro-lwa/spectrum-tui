@@ -16,7 +16,7 @@ use hifitime::Epoch;
 use ndarray::{Array, Axis, Ix1, Ix2, Ix3};
 use ratatui::{
     layout::Constraint,
-    style::Style,
+    style::{Color, Style},
     text::Text,
     widgets::{Cell, Row, Table},
 };
@@ -156,10 +156,19 @@ impl SaturationStats {
             .map(|(pol, stat)| {
                 // iterate over pol/stats and collect into a row
                 Row::new(vec![
-                    Cell::from(Text::from(format!("{:6< }{}", pol, 0))),
-                    Cell::from(Text::from(format!("{:0>5.2}", stat.avg1 * 100.0))),
-                    Cell::from(Text::from(format!("{:0>5.2}", stat.avg5 * 100.0))),
-                    Cell::from(Text::from(format!("{:0>5.2}", stat.avg10 * 100.0))),
+                    Cell::from(Text::styled(format!("{:6< }{}", pol, 0), Color::Gray)),
+                    Cell::from(Text::styled(
+                        format!("{:0>5.2}", stat.avg1 * 100.0),
+                        Color::Gray,
+                    )),
+                    Cell::from(Text::styled(
+                        format!("{:0>5.2}", stat.avg5 * 100.0),
+                        Color::Gray,
+                    )),
+                    Cell::from(Text::styled(
+                        format!("{:0>5.2}", stat.avg10 * 100.0),
+                        Color::Gray,
+                    )),
                 ])
             })
             .chain(
@@ -169,10 +178,19 @@ impl SaturationStats {
                     .map(|(pol, stat)| {
                         // iterate over pol/stats and collect into a row
                         Row::new(vec![
-                            Cell::from(Text::from(format!("{:6< }{}", pol, 1))),
-                            Cell::from(Text::from(format!("{:0>5.2}", stat.avg1 * 100.0))),
-                            Cell::from(Text::from(format!("{:0>5.2}", stat.avg5 * 100.0))),
-                            Cell::from(Text::from(format!("{:0>5.2}", stat.avg10 * 100.0))),
+                            Cell::from(Text::styled(format!("{:6< }{}", pol, 1), Color::Gray)),
+                            Cell::from(Text::styled(
+                                format!("{:0>5.2}", stat.avg1 * 100.0),
+                                Color::Gray,
+                            )),
+                            Cell::from(Text::styled(
+                                format!("{:0>5.2}", stat.avg5 * 100.0),
+                                Color::Gray,
+                            )),
+                            Cell::from(Text::styled(
+                                format!("{:0>5.2}", stat.avg10 * 100.0),
+                                Color::Gray,
+                            )),
                         ])
                     }),
             );
