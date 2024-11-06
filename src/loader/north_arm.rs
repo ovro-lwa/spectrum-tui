@@ -14,6 +14,12 @@ use async_trait::async_trait;
 use byteorder::{LittleEndian, ReadBytesExt};
 use hifitime::Epoch;
 use ndarray::{Array, Axis, Ix1, Ix2, Ix3};
+use ratatui::{
+    layout::Constraint,
+    style::Style,
+    text::Text,
+    widgets::{Cell, Row, Table},
+};
 use ssh2::{ErrorCode, Session, Sftp};
 
 use crate::loader::{AutoSpectra, SpectrumLoader};
@@ -84,6 +90,113 @@ impl PolarizationType {
             Self::StokesOtherHalf => vec!["Q".into(), "U".into()],
             Self::StokesFull => vec!["I".into(), "Q".into(), "U".into(), "V".into()],
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+/// 1, 5, and 10 minute rolling averages
+/// used for providing updating statisics on saturation
+pub(crate) struct Stats {
+    avg1: f64,
+    avg5: f64,
+    avg10: f64,
+}
+impl Stats {
+    pub fn new(saturation: f64) -> Self {
+        Self {
+            avg1: saturation,
+            avg5: saturation,
+            avg10: saturation,
+        }
+    }
+    /// Update the rolling stats with the new data point
+    /// accounting for the averaging length defined by
+    /// 1/ rate points per second.
+    pub fn update(&mut self, saturation: f64, rate: f64) {
+        let n_per_min = 60.0 / rate;
+        self.avg1 = self.avg1 + (saturation - self.avg1) / n_per_min;
+        self.avg5 = self.avg5 + (saturation - self.avg5) / (5.0 * n_per_min);
+        self.avg10 = self.avg10 + (saturation - self.avg10) / (10.0 * n_per_min);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+/// Rolling averages over 1, 5, and 10 minutes
+/// for the saturation of each tuning and for each polarization.
+pub(crate) struct SaturationStats {
+    tuning1: Vec<Stats>,
+    tuning2: Vec<Stats>,
+    pols: Vec<String>,
+}
+impl SaturationStats {
+    pub fn update(&mut self, other: Self, rate: f64) {
+        self.tuning1
+            .iter_mut()
+            .zip(other.tuning1.iter())
+            .for_each(|(stat, new)| stat.update(new.avg1, rate));
+
+        self.tuning2
+            .iter_mut()
+            .zip(other.tuning2.iter())
+            .for_each(|(stat, new)| stat.update(new.avg1, rate));
+    }
+
+    pub fn as_table(&self) -> Table {
+        let header = ["pol", "1min", "5min", "10min"]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .style(Style::default())
+            .height(1);
+
+        let rows = self
+            .pols
+            .iter()
+            .zip(self.tuning1.iter())
+            .map(|(pol, stat)| {
+                // iterate over pol/stats and collect into a row
+                Row::new(vec![
+                    Cell::from(Text::from(format!("{:6< }{}", pol, 0))),
+                    Cell::from(Text::from(format!("{:0>5.2}", stat.avg1 * 100.0))),
+                    Cell::from(Text::from(format!("{:0>5.2}", stat.avg5 * 100.0))),
+                    Cell::from(Text::from(format!("{:0>5.2}", stat.avg10 * 100.0))),
+                ])
+            })
+            .chain(
+                self.pols
+                    .iter()
+                    .zip(self.tuning2.iter())
+                    .map(|(pol, stat)| {
+                        // iterate over pol/stats and collect into a row
+                        Row::new(vec![
+                            Cell::from(Text::from(format!("{:6< }{}", pol, 1))),
+                            Cell::from(Text::from(format!("{:0>5.2}", stat.avg1 * 100.0))),
+                            Cell::from(Text::from(format!("{:0>5.2}", stat.avg5 * 100.0))),
+                            Cell::from(Text::from(format!("{:0>5.2}", stat.avg10 * 100.0))),
+                        ])
+                    }),
+            );
+
+        Table::new(
+            rows,
+            [
+                Constraint::Length(7),
+                Constraint::Length(5),
+                Constraint::Length(5),
+                Constraint::Length(5),
+            ],
+        )
+        .header(header)
+        .style(Style::default())
+        .block(
+            ratatui::widgets::Block::default()
+                .title(ratatui::text::Span::styled(
+                    "Saturation Statistics",
+                    Style::default(),
+                ))
+                .borders(ratatui::widgets::Borders::ALL)
+                .style(Style::default()),
+        )
     }
 }
 
@@ -220,51 +333,103 @@ impl DRHeader {
     }
 
     /// Calculate the % of integrations that are saturated per pol per tuning
-    pub fn calc_saturation(&self) -> Vec<f64> {
+    pub fn calc_saturation(&self) -> SaturationStats {
         let tmp_sats = self
             .saturation_count
             .map(|x| x as f64 / (self.n_ints as f64 * self.n_freqs as f64));
         match self.stokes_format {
-            PolarizationType::LinearXX => vec![tmp_sats[0], tmp_sats[2]],
-            PolarizationType::LinearXYReRe | PolarizationType::LinearXYIm => {
-                vec![tmp_sats[0].max(tmp_sats[1]), tmp_sats[2].max(tmp_sats[3])]
-            }
-            PolarizationType::LinearYY => vec![tmp_sats[1], tmp_sats[3]],
-            PolarizationType::LinearRealHalf => tmp_sats.to_vec(),
+            PolarizationType::LinearXX => SaturationStats {
+                tuning1: vec![Stats::new(tmp_sats[0])],
+                tuning2: vec![Stats::new(tmp_sats[2])],
+                pols: vec!["XX".into()],
+            },
+            PolarizationType::LinearXYReRe | PolarizationType::LinearXYIm => SaturationStats {
+                tuning1: vec![Stats::new(tmp_sats[0].max(tmp_sats[1]))],
+                tuning2: vec![Stats::new(tmp_sats[2].max(tmp_sats[3]))],
+                pols: if self.stokes_format == PolarizationType::LinearXYReRe {
+                    vec!["Re(XY)".into()]
+                } else {
+                    vec!["Im(XY)".into()]
+                },
+            },
+            PolarizationType::LinearYY => SaturationStats {
+                tuning1: vec![Stats::new(tmp_sats[1])],
+                tuning2: vec![Stats::new(tmp_sats[3])],
+                pols: vec!["YY".into()],
+            },
+            PolarizationType::LinearRealHalf => SaturationStats {
+                tuning1: vec![Stats::new(tmp_sats[0]), Stats::new(tmp_sats[1])],
+                tuning2: vec![Stats::new(tmp_sats[2]), Stats::new(tmp_sats[3])],
+                pols: vec!["XX".into(), "YY".into()],
+            },
             PolarizationType::LinearOtherHalf => {
                 let sat1 = tmp_sats[0].max(tmp_sats[1]);
                 let sat2 = tmp_sats[2].max(tmp_sats[3]);
-                vec![sat1, sat1, sat2, sat2]
+                SaturationStats {
+                    tuning1: vec![Stats::new(sat1); 2],
+                    tuning2: vec![Stats::new(sat2); 2],
+                    pols: vec!["Re(XY)".into(), "Im(XY)".into()],
+                }
             }
             PolarizationType::LinearFull => {
                 let sat1 = tmp_sats[0].max(tmp_sats[1]);
                 let sat2 = tmp_sats[2].max(tmp_sats[3]);
-                vec![
-                    tmp_sats[0],
-                    sat1,
-                    sat1,
-                    tmp_sats[1],
-                    tmp_sats[2],
-                    sat2,
-                    sat2,
-                    tmp_sats[3],
-                ]
+                SaturationStats {
+                    tuning1: vec![
+                        Stats::new(tmp_sats[0]),
+                        Stats::new(sat1),
+                        Stats::new(sat1),
+                        Stats::new(tmp_sats[1]),
+                    ],
+                    tuning2: vec![
+                        Stats::new(tmp_sats[2]),
+                        Stats::new(sat2),
+                        Stats::new(sat2),
+                        Stats::new(tmp_sats[3]),
+                    ],
+                    pols: vec!["XX".into(), "Re(XY)".into(), "Im(XY)".into(), "YY".into()],
+                }
             }
             PolarizationType::StokesI
             | PolarizationType::StokesQ
             | PolarizationType::StokesU
             | PolarizationType::StokesV => {
-                vec![tmp_sats[0].max(tmp_sats[1]), tmp_sats[2].max(tmp_sats[3])]
+                SaturationStats {
+                    tuning1: vec![Stats::new(tmp_sats[0].max(tmp_sats[1]))],
+                    tuning2: vec![Stats::new(tmp_sats[2].max(tmp_sats[3]))],
+                    pols: if self.stokes_format == PolarizationType::StokesI {
+                        vec!["I".into()]
+                    } else if self.stokes_format == PolarizationType::StokesQ {
+                        vec!["Q".into()]
+                    } else if self.stokes_format == PolarizationType::StokesU {
+                        vec!["U".into()]
+                    } else {
+                        // v is only remaing pol possible
+                        vec!["V".into()]
+                    },
+                }
             }
             PolarizationType::StokesRealHalf | PolarizationType::StokesOtherHalf => {
                 let sat1 = tmp_sats[0].max(tmp_sats[1]);
                 let sat2 = tmp_sats[2].max(tmp_sats[3]);
-                vec![sat1, sat1, sat2, sat2]
+                SaturationStats {
+                    tuning1: vec![Stats::new(sat1); 2],
+                    tuning2: vec![Stats::new(sat2); 2],
+                    pols: if self.stokes_format == PolarizationType::StokesRealHalf {
+                        vec!["I".into(), "V".into()]
+                    } else {
+                        vec!["Q".into(), "U".into()]
+                    },
+                }
             }
             PolarizationType::StokesFull => {
                 let sat1 = tmp_sats[0].max(tmp_sats[1]);
                 let sat2 = tmp_sats[2].max(tmp_sats[3]);
-                vec![sat1, sat1, sat1, sat1, sat2, sat2, sat2, sat2]
+                SaturationStats {
+                    tuning1: vec![Stats::new(sat1); 4],
+                    tuning2: vec![Stats::new(sat2); 4],
+                    pols: vec!["I".into(), "Q".into(), "U".into(), "V".into()],
+                }
             }
         }
     }
@@ -466,15 +631,7 @@ impl DRSpectrum {
         // package the data up
         // transform to MHz
         let Self { header, data } = self;
-        let descriptions: Vec<String> = {
-            header
-                .stokes_format
-                .desription()
-                .iter()
-                .zip(header.calc_saturation().iter())
-                .map(|(desc, sat)| format!("{desc:<6 } {:.2}", sat * 100.0))
-                .collect()
-        };
+        let descriptions = header.stokes_format.desription();
         let freqs = header.get_freqs().map(|x| x / 1e6);
 
         let mut data_out =
@@ -496,10 +653,19 @@ impl DRSpectrum {
 pub(crate) struct DiskLoader {
     /// File to read spectra from
     file: PathBuf,
+
+    saturations: Option<SaturationStats>,
 }
 impl DiskLoader {
     pub fn new(input_file: PathBuf) -> Self {
-        Self { file: input_file }
+        Self {
+            file: input_file,
+            saturations: None,
+        }
+    }
+
+    pub fn get_stats(&self) -> Option<SaturationStats> {
+        self.saturations.clone()
     }
 }
 #[async_trait]
@@ -512,12 +678,12 @@ impl SpectrumLoader for DiskLoader {
                 .with_context(|| format!("Unable to open {}", self.file.display()))
                 .ok()?,
         );
+        let spec = DRSpectrum::from_bytes(&mut file_handle).ok()?;
+        let saturation = spec.header.calc_saturation();
 
-        Some(
-            DRSpectrum::from_bytes(&mut file_handle)
-                .ok()?
-                .into_autospectra(),
-        )
+        self.saturations.replace(saturation);
+
+        Some(spec.into_autospectra())
     }
 
     /// Filters the antennas to be plotted based on their string names.
@@ -544,6 +710,9 @@ pub struct DRLoader {
 
     /// the last timestamp data was gathered for
     last_timestamp: Epoch,
+
+    /// Saturation statistics
+    saturation: Option<SaturationStats>,
 }
 impl std::fmt::Debug for DRLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -579,6 +748,7 @@ impl DRLoader {
             file_tag: None,
             sftp: sess.sftp().context("Error initializing sftp server")?,
             last_timestamp: Epoch::from_unix_seconds(0.0),
+            saturation: None,
         };
 
         me.find_latest_file()?;
@@ -663,6 +833,10 @@ impl DRLoader {
             Ok(None)
         }
     }
+
+    pub fn get_stats(&self) -> Option<SaturationStats> {
+        self.saturation.clone()
+    }
 }
 
 #[async_trait]
@@ -696,6 +870,8 @@ impl SpectrumLoader for DRLoader {
                 .map(|spec| spec.into_autospectra())
         } else {
             self.last_timestamp = spectra.header.timestamp;
+
+            self.saturation.replace(spectra.header.calc_saturation());
 
             Some(spectra.into_autospectra())
         }

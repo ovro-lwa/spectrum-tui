@@ -32,6 +32,8 @@ enum Action {
     #[cfg(feature = "ovro")]
     DelAnt,
     ToggleLog,
+    #[cfg(feature = "lwa-na")]
+    ToggleStats,
 }
 impl Action {
     pub fn from_event(event: KeyEvent) -> Option<Self> {
@@ -68,6 +70,11 @@ impl Action {
                 code: KeyCode::Char('l'),
                 ..
             } => Some(Self::ToggleLog),
+            #[cfg(feature = "lwa-na")]
+            KeyEvent {
+                code: KeyCode::Char('s'),
+                ..
+            } => Some(Self::ToggleStats),
             _ => None,
         }
     }
@@ -91,6 +98,11 @@ impl Action {
             Row::new(vec![
                 Cell::from(Span::styled("l", key_style)),
                 Cell::from(Span::styled("Toggle dB", help_style)),
+            ]),
+            #[cfg(feature = "lwa-na")]
+            Row::new(vec![
+                Cell::from(Span::styled("s", key_style)),
+                Cell::from(Span::styled("Toggle Saturation Stats", help_style)),
             ]),
         ]
     }
@@ -148,6 +160,16 @@ enum TuiType {
         /// The interval in seconds at which to poll for new autos
         delay: u64,
     },
+}
+#[cfg(feature = "lwa-na")]
+impl TuiType {
+    /// returns the refresh rate in seconds
+    pub(crate) fn data_rate(&self) -> f64 {
+        match self {
+            TuiType::File { .. } => 1.0,
+            TuiType::Live { delay, .. } => *delay as f64,
+        }
+    }
 }
 
 #[derive(Parser)]

@@ -8,7 +8,6 @@ use std::{
 use ndarray::{arr2, Array};
 
 use anyhow::{bail, Context, Error, Result};
-use async_stream::stream;
 use crossterm::event::{Event, EventStream};
 use futures::Stream;
 use log::info;
@@ -18,10 +17,10 @@ use ratatui::{
     Frame, Terminal,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio_stream::{StreamExt, StreamMap};
+use tokio_stream::{wrappers::ReceiverStream, StreamExt, StreamMap};
 
 #[cfg(feature = "lwa-na")]
-use crate::loader::north_arm::{DRLoader, DiskLoader as NADiskLoader};
+use crate::loader::north_arm::{DRLoader, DiskLoader as NADiskLoader, SaturationStats};
 
 #[cfg(feature = "ovro")]
 use {
@@ -48,6 +47,9 @@ const SELECTED_STYLE: Style = Style::new().bg(Color::Gray).add_modifier(Modifier
 
 enum StreamReturn {
     Action(Result<Event, io::Error>),
+    #[cfg(feature = "lwa-na")]
+    Data((AutoSpectra, Option<SaturationStats>)),
+    #[cfg(not(feature = "lwa-na"))]
     Data(AutoSpectra),
     Tick,
 }
@@ -103,6 +105,13 @@ pub(crate) struct App {
     input_mode: InputMode,
 
     log_plot: Option<bool>,
+
+    #[cfg(feature = "lwa-na")]
+    /// some saturation statistics to print
+    saturations: Option<SaturationStats>,
+
+    #[cfg(feature = "lwa-na")]
+    show_stats: bool,
 }
 #[cfg(feature = "ovro")]
 impl App {
@@ -169,7 +178,7 @@ impl App {
     async fn submit_antenna_filter(&mut self) -> Result<()> {
         let new_ant = self.input.trim().to_uppercase().to_owned();
         if new_ant.is_empty() {
-            info!("Invalide antenna name...Skipping");
+            info!("Invalid antenna name...Skipping");
             return Ok(());
         }
         info!("Adding Antenna {new_ant:?}");
@@ -215,6 +224,10 @@ impl App {
     // END list examples
 }
 
+#[cfg(feature = "lwa-na")]
+type BackendReturn = Result<Receiver<(AutoSpectra, Option<SaturationStats>)>>;
+#[cfg(not(feature = "lwa-na"))]
+type BackendReturn = Result<Receiver<AutoSpectra>>;
 impl App {
     pub fn new(refresh_rate: Duration, data_backend: TuiType) -> Self {
         let (filter_sender, filter_recv) = tokio::sync::mpsc::channel(10);
@@ -244,6 +257,10 @@ impl App {
             #[cfg(feature = "ovro")]
             character_index: 0,
             log_plot: None,
+            #[cfg(feature = "lwa-na")]
+            saturations: None,
+            #[cfg(feature = "lwa-na")]
+            show_stats: false,
         }
     }
 
@@ -274,15 +291,48 @@ impl App {
 
         frame.render_widget(ui::draw_charts(self.spectra.as_ref()), chunks[1]);
 
-        let log_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(80), Constraint::Min(20)].as_ref())
-            .split(chunks[2]);
+        cfg_if::cfg_if! {
+            if #[cfg(feature="lwa-na")]{
+                match self.show_stats{
+                    true =>{
+                        let log_chunks=   Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(60), Constraint::Min(20), Constraint::Min(20)].as_ref())
+                        .split(chunks[2]);
 
-        // Logs
-        frame.render_widget(ui::draw_logs(), log_chunks[0]);
-        // Body & Help
-        frame.render_widget(ui::draw_help(), log_chunks[1]);
+                        // Logs
+                        frame.render_widget(ui::draw_logs(), log_chunks[0]);
+                        // stats
+                        frame.render_widget(self.saturations.as_ref().map(|x| x.as_table()).unwrap_or_default(), log_chunks[1]);
+                        // Body & Help
+                        frame.render_widget(ui::draw_help(), log_chunks[2]);
+                    },
+                    false =>{
+                        let log_chunks=   Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(80), Constraint::Min(20)].as_ref())
+                        .split(chunks[2]);
+
+                        // Logs
+                        frame.render_widget(ui::draw_logs(), log_chunks[0]);
+                        // Body & Help
+                        frame.render_widget(ui::draw_help(), log_chunks[1]);
+
+                    }
+                }
+            } else{
+
+                let log_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(80), Constraint::Min(20)].as_ref())
+                    .split(chunks[2]);
+
+                // Logs
+                frame.render_widget(ui::draw_logs(), log_chunks[0]);
+                // Body & Help
+                frame.render_widget(ui::draw_help(), log_chunks[1]);
+            }
+        }
 
         match self.input_mode {
             InputMode::Normal => {}
@@ -341,7 +391,7 @@ impl App {
         #[allow(unused_mut)]
         #[allow(unused_variables)]
         mut filter_recv: Receiver<Vec<String>>,
-    ) -> Result<Receiver<AutoSpectra>> {
+    ) -> BackendReturn {
         let (sender, recvr) = tokio::sync::mpsc::channel(30);
 
         match backend {
@@ -382,7 +432,13 @@ impl App {
                 }
                 tokio::spawn(async move {
                     if let Some(spec) = data_loader.get_data().await {
-                        sender.send(spec).await?;
+                        cfg_if::cfg_if! {
+                            if #[cfg(feature="lwa-na")]{
+                                    sender.send((spec, data_loader.get_stats())).await?;
+                            } else {
+                                sender.send(spec).await?;
+                            }
+                        }
                     }
 
                     #[cfg(feature = "ovro")]
@@ -438,6 +494,22 @@ impl App {
                                     else => break,
                                 }
                             }
+                        } else  if #[cfg(feature="lwa-na")]{
+                            loop {
+                                tokio::select! {
+                                    _ = interval.tick() => {
+                                        if let Some(spec) = data_loader.get_data().await {
+                                            sender.send((spec, data_loader.get_stats())).await?;
+                                        }
+                                    },
+                                    Some(filter) = filter_recv.recv() => {
+                                        data_loader.filter_antenna(&filter)?;
+                                        // force a tick now to update the data
+                                        interval.reset_immediately();
+                                    }
+                                    else => break,
+                                }
+                            }
                         } else {
                             loop {
                                 tokio::select! {
@@ -470,16 +542,9 @@ impl App {
     ) -> Result<StreamMap<&'static str, Pin<Box<dyn Stream<Item = StreamReturn> + Send>>>> {
         let mut stream = tokio_stream::StreamMap::new();
 
-        let mut data_recv = Self::spawn_backend(data_backend, filter_recv).await?;
+        let data_recv = Self::spawn_backend(data_backend, filter_recv).await?;
 
-        let data_stream = Box::pin(
-            stream! {
-                while let Some(data) = data_recv.recv().await{
-                    yield data
-                }
-            }
-            .map(StreamReturn::Data),
-        ) as Pin<Box<dyn Stream<Item = StreamReturn> + Send>>;
+        let data_stream = Box::pin(ReceiverStream::new(data_recv).map(StreamReturn::Data));
 
         let tick_stream = {
             let mut tmp = tokio::time::interval(refresh_rate);
@@ -533,6 +598,8 @@ impl App {
                                                 *log = !*log;
                                             }
                                         }
+                                        #[cfg(feature = "lwa-na")]
+                                        Action::ToggleStats => self.show_stats = !self.show_stats,
                                     }
                                 }
                             }
@@ -573,6 +640,24 @@ impl App {
                         Ok(_) => {}
                     }
                 }
+                #[cfg(feature = "lwa-na")]
+                StreamReturn::Data((data, new_stats)) => {
+                    info!("Received New autosprectra.");
+                    if self.log_plot.is_none() {
+                        self.log_plot = Some(data.plot_log);
+                    }
+                    self.spectra.replace(data);
+
+                    if let Some(new_stats) = new_stats {
+                        match self.saturations.as_mut() {
+                            Some(stats) => stats.update(new_stats, self.data_backend.data_rate()),
+                            None => {
+                                self.saturations.replace(new_stats);
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(feature = "lwa-na"))]
                 StreamReturn::Data(data) => {
                     info!("Received New autosprectra.");
                     if self.log_plot.is_none() {
