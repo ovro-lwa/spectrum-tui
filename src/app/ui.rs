@@ -97,12 +97,12 @@ pub(crate) fn draw_charts<'a>(data: Option<&'a AutoSpectra>, lims: &'a Ylims<'a>
 
     let ylabels = Array::linspace(ymin, ymax, 11)
         .iter()
-        .map(|x| Span::raw(format!("{:.1}", x)))
+        .map(|x| Span::raw(format!("{:.3}", x)))
         .collect::<Vec<_>>();
 
     let labels = Array::linspace(xmin, xmax, 11)
         .iter()
-        .map(|x| Span::raw(format!("{:.1}", x)))
+        .map(|x| Span::raw(format!("{:.3}", x)))
         .collect::<Vec<_>>();
 
     let title = data.map_or("Power [dB]", |spec| match spec.plot_log {
