@@ -1,5 +1,4 @@
 use ndarray::Array;
-#[cfg(feature = "ovro")]
 use ratatui::layout::{Flex, Layout, Rect};
 use ratatui::{
     layout::{Alignment, Constraint},
@@ -10,7 +9,7 @@ use ratatui::{
 };
 use tui_logger::TuiLoggerWidget;
 
-use crate::{loader::AutoSpectra, Action};
+use crate::{app::Ylims, loader::AutoSpectra, Action};
 
 pub(crate) fn draw_title<'a>() -> Paragraph<'a> {
     Paragraph::new("Spectrum Tui!!")
@@ -57,35 +56,44 @@ pub(crate) fn draw_help<'a>() -> Table<'a> {
         .column_spacing(1)
 }
 
-pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
-    let datasets = data.map_or(vec![], |specs| {
+pub(crate) fn draw_charts<'a>(data: Option<&'a AutoSpectra>, lims: &'a Ylims<'a>) -> Chart<'a> {
+    let (datasets, log) = data.map_or((vec![], false), |specs| {
         let n_spectra = specs.spectra.len();
         let plot_data = match specs.plot_log {
             true => specs.log_spectra.iter(),
             false => specs.spectra.iter(),
         };
-        plot_data
-            .zip(specs.ant_names.iter())
-            .enumerate()
-            .map(|(cnt, (x, name))| {
-                let fraction = ((cnt + 1) as f32 / n_spectra as f32) * 255.0;
+        (
+            plot_data
+                .zip(specs.ant_names.iter())
+                .enumerate()
+                .map(|(cnt, (x, name))| {
+                    let fraction = ((cnt + 1) as f32 / n_spectra as f32) * 255.0;
 
-                Dataset::default()
-                    .name(name.clone())
-                    .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(Color::Indexed(fraction as u8)))
-                    .graph_type(GraphType::Line)
-                    .data(x.as_slice())
-            })
-            .collect::<Vec<_>>()
+                    Dataset::default()
+                        .name(name.clone())
+                        .marker(symbols::Marker::Braille)
+                        .style(Style::default().fg(Color::Indexed(fraction as u8)))
+                        .graph_type(GraphType::Line)
+                        .data(x.as_slice())
+                })
+                .collect::<Vec<_>>(),
+            specs.plot_log,
+        )
     });
 
     let xmin = data.map_or(0.0, |x| x.freq_min);
     let xmax = data.map_or(10.0, |x| x.freq_max);
 
-    let ymin = data.map_or(-120.0, |x| x.ymin());
+    let ymin = lims
+        .get_min(log)
+        .or_else(|| data.map(|x| x.ymin()))
+        .unwrap_or(-120.0);
 
-    let ymax = data.map_or(-20.0, |x| x.ymax());
+    let ymax = lims
+        .get_max(log)
+        .or_else(|| data.map(|x| x.ymax()))
+        .unwrap_or(-20.0);
 
     let ylabels = Array::linspace(ymin, ymax, 11)
         .iter()
@@ -130,7 +138,6 @@ pub(crate) fn draw_charts(data: Option<&AutoSpectra>) -> Chart {
         )
 }
 
-#[cfg(feature = "ovro")]
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
 pub(crate) fn center_popup(area: Rect, horizontal: Constraint, vertical: Constraint) -> Rect {
     let [area] = Layout::horizontal([horizontal])

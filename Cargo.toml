@@ -16,7 +16,7 @@
  byteorder    = { version = "~1.5", optional = true }
  cfg-if       = "1.0.0"
  clap         = { version = "4.3.0", features = [ "derive" ] }
- crossterm    = { version = "0.26.1", features = [ "event-stream" ] }
+ crossterm    = { version = "0.28.1", features = [ "event-stream" ] }
  etcd-client  = { version = "0.11.1", optional = true }
  expanduser   = { version = "1.2.2", optional = true }
  futures      = "0.3.28"
@@ -25,12 +25,13 @@
  log          = "0.4.17"
  ndarray      = "~0.16"
  ndarray-npy  = { version = "~0.9", optional = true }
- ratatui      = "~0.28"
+ ratatui      = "~0.29"
  serde_json   = { version = "1.0.96", optional = true }
  ssh2         = { version = "0.9.4", optional = true }
  tokio        = { version = "1.41.0", features = [ "full" ] }
  tokio-stream = "0.1.14"
- tui-logger   = { version = "~0.13" }
+ tui-logger   = { git = "https://github.com/gin66/tui-logger.git" }
+ tui-textarea = "0.7.0"
 
 [dev-dependencies]
  ndarray-npy = { version = "~0.9" }

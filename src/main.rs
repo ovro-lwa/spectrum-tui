@@ -34,6 +34,7 @@ enum Action {
     ToggleLog,
     #[cfg(feature = "lwa-na")]
     ToggleStats,
+    ChangeYLims,
 }
 impl Action {
     pub fn from_event(event: KeyEvent) -> Option<Self> {
@@ -70,6 +71,10 @@ impl Action {
                 code: KeyCode::Char('l'),
                 ..
             } => Some(Self::ToggleLog),
+            KeyEvent {
+                code: KeyCode::Char('y'),
+                ..
+            } => Some(Self::ChangeYLims),
             #[cfg(feature = "lwa-na")]
             KeyEvent {
                 code: KeyCode::Char('s'),
@@ -98,6 +103,10 @@ impl Action {
             Row::new(vec![
                 Cell::from(Span::styled("l", key_style)),
                 Cell::from(Span::styled("Toggle dB", help_style)),
+            ]),
+            Row::new(vec![
+                Cell::from(Span::styled("y", key_style)),
+                Cell::from(Span::styled("Change Y-lims", help_style)),
             ]),
             #[cfg(feature = "lwa-na")]
             Row::new(vec![

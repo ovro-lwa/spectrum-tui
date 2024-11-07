@@ -8,16 +8,19 @@ use std::{
 use ndarray::{arr2, Array};
 
 use anyhow::{bail, Context, Error, Result};
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
 use futures::Stream;
-use log::info;
+use log::{debug, info};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, Clear},
     Frame, Terminal,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt, StreamMap};
+use tui_textarea::TextArea;
 
 #[cfg(feature = "lwa-na")]
 use crate::loader::north_arm::{DRLoader, DiskLoader as NADiskLoader, SaturationStats};
@@ -25,11 +28,9 @@ use crate::loader::north_arm::{DRLoader, DiskLoader as NADiskLoader, SaturationS
 #[cfg(feature = "ovro")]
 use {
     crate::loader::ovro::{DiskLoader as OvroDiskLoader, EtcdLoader},
-    crossterm::event::{KeyCode, KeyEventKind},
     ratatui::{
         layout::Position,
-        style::{Color, Modifier, Style},
-        widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph},
+        widgets::{HighlightSpacing, List, ListItem, ListState, Paragraph},
     },
 };
 
@@ -61,6 +62,7 @@ enum InputMode {
     AntennaInput,
     #[cfg(feature = "ovro")]
     RemoveAntenna,
+    ChartLims,
 }
 
 #[cfg(feature = "ovro")]
@@ -70,8 +72,252 @@ struct AntennaFilter {
     state: ListState,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct Ylims<'a> {
+    max: Option<f64>,
+    min: Option<f64>,
+
+    //  use an array to make switching focus easier
+    textareas: [TextArea<'a>; 2],
+
+    focus: usize,
+    is_valid: bool,
+    layout: Layout,
+}
+impl<'a> Ylims<'a> {
+    fn new() -> Self {
+        let min_text = {
+            let mut tmp = TextArea::default();
+            tmp.set_cursor_line_style(Style::default());
+            tmp.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .title("Ymin:"),
+            );
+            tmp.set_placeholder_text("auto");
+            tmp
+        };
+
+        let max_text = {
+            let mut tmp = TextArea::default();
+            tmp.set_cursor_line_style(Style::default());
+            tmp.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .title("Ymax:"),
+            );
+            tmp.set_placeholder_text("auto");
+            tmp
+        };
+
+        Self {
+            max: None,
+            min: None,
+            textareas: [min_text, max_text],
+            focus: 0,
+            is_valid: true,
+            layout: Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref()),
+        }
+    }
+
+    pub(crate) fn get_max(&self, plot_log: bool) -> Option<f64> {
+        self.max.map(|val| match plot_log {
+            true => {
+                let tmp = 10.0 * val.log10();
+                match tmp.is_finite() {
+                    true => tmp,
+                    false => f64::INFINITY,
+                }
+            }
+            false => val,
+        })
+    }
+
+    pub(crate) fn get_min(&self, plot_log: bool) -> Option<f64> {
+        self.min.map(|val| match plot_log {
+            true => {
+                let tmp = 10.0 * val.log10();
+                match tmp.is_finite() {
+                    true => tmp,
+                    false => f64::NEG_INFINITY,
+                }
+            }
+            false => val,
+        })
+    }
+
+    fn input(&mut self, input: KeyEvent) -> bool {
+        self.textareas[self.focus].input(input)
+    }
+
+    fn get_text(&mut self) -> [String; 2] {
+        self.textareas[0].select_all();
+        self.textareas[0].cut();
+        self.textareas[1].select_all();
+        self.textareas[1].cut();
+        let out = [self.textareas[0].yank_text(), self.textareas[1].yank_text()];
+        self.textareas.iter_mut().for_each(|textarea| {
+            textarea.set_yank_text("");
+        });
+        out
+    }
+
+    fn clear(&mut self) {
+        let _ = self.get_text();
+    }
+
+    fn update_vals(&mut self, plot_log: bool) {
+        let [min_line, max_line] = self.get_text();
+        let text = min_line.trim().to_lowercase();
+
+        if text == "auto" || text.is_empty() {
+            self.min = None;
+        } else {
+            self.min = Some({
+                let val = text
+                    .parse::<f64>()
+                    .expect("Valid YMin text changed before parsing");
+                // always store limits in absolute units
+                // so convert back if we're plotting in log
+                match plot_log {
+                    true => 10.0_f64.powf(val / 10.0),
+                    false => val,
+                }
+            })
+        }
+
+        let text = max_line.trim().to_lowercase();
+
+        if text.to_lowercase() == "auto" || text.is_empty() {
+            self.max = None;
+        } else {
+            self.max = Some({
+                let val = text
+                    .parse::<f64>()
+                    .expect("Valid Ymax text changed before parsing");
+                // always store limits in absolute units
+                // so convert back if we're plotting in log
+                match plot_log {
+                    true => 10.0_f64.powf(val / 10.0),
+                    false => val,
+                }
+            })
+        }
+        debug!("min: {:?}", self.min);
+        debug!("max: {:?}", self.max);
+    }
+
+    fn inactivate(&mut self) {
+        let textarea = &mut self.textareas[self.focus];
+
+        textarea.set_cursor_line_style(Style::default());
+        textarea.set_cursor_style(Style::default());
+    }
+
+    fn activate(&mut self) {
+        let textarea = &mut self.textareas[self.focus];
+
+        textarea.set_cursor_line_style(Style::default().add_modifier(Modifier::UNDERLINED));
+        textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+    }
+
+    fn validate(&mut self) {
+        self.is_valid = self
+            .textareas
+            .iter_mut()
+            .enumerate()
+            .all(|(cnt, textarea)| {
+                let name = if cnt == 0 { "Min:" } else { "Max:" };
+                let line = textarea.lines()[0].trim().to_lowercase();
+                if line == "auto" || line.is_empty() {
+                    textarea.set_style(Style::default().fg(if self.focus == cnt {
+                        Color::LightGreen
+                    } else {
+                        Color::DarkGray
+                    }));
+                    textarea.set_block(
+                        Block::default()
+                            .border_style(if self.focus == cnt {
+                                Color::LightGreen
+                            } else {
+                                Color::DarkGray
+                            })
+                            .borders(Borders::ALL)
+                            .title(format!("{} Auto", name)),
+                    );
+                    true
+                } else if line.parse::<f64>().is_err() {
+                    textarea.set_style(Style::default().fg(if self.focus == cnt {
+                        Color::LightRed
+                    } else {
+                        Color::DarkGray
+                    }));
+                    textarea.set_block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(if self.focus == cnt {
+                                Color::LightRed
+                            } else {
+                                Color::DarkGray
+                            })
+                            .title(format!("{} Invalid", name,)),
+                    );
+                    false
+                } else {
+                    textarea.set_style(Style::default().fg(if self.focus == cnt {
+                        Color::LightGreen
+                    } else {
+                        Color::Green
+                    }));
+                    textarea.set_block(
+                        Block::default()
+                            .border_style(if self.focus == cnt {
+                                Color::LightGreen
+                            } else {
+                                Color::Green
+                            })
+                            .borders(Borders::ALL)
+                            .title(format!("{} Ok", name)),
+                    );
+                    true
+                }
+            });
+    }
+
+    fn change_focus(&mut self) {
+        self.inactivate();
+        self.focus = (self.focus + 1) % 2;
+        self.activate();
+        self.validate();
+    }
+
+    fn reset_blocks(&mut self) {
+        // reset the focus/curson on each
+        self.focus = 1;
+        self.inactivate();
+        self.focus = 0;
+        self.activate();
+
+        self.textareas
+            .iter_mut()
+            .enumerate()
+            .for_each(|(cnt, text)| {
+                text.set_block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .style(Style::default().fg(Color::DarkGray))
+                        .title(if cnt == 0 { "Ymin:" } else { "Ymax:" }),
+                );
+            });
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct App {
+pub(crate) struct App<'a> {
     #[cfg(feature = "ovro")]
     /// Used to store/update which antennas are currently being plotted
     antenna_filter: AntennaFilter,
@@ -112,9 +358,11 @@ pub(crate) struct App {
 
     #[cfg(feature = "lwa-na")]
     show_stats: bool,
+
+    ylims: Ylims<'a>,
 }
 #[cfg(feature = "ovro")]
-impl App {
+impl<'a> App<'a> {
     // BEGIN: function pulled from the ratatui user input example
     fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
         new_cursor_pos.clamp(0, self.input.chars().count())
@@ -228,7 +476,7 @@ impl App {
 type BackendReturn = Result<Receiver<(AutoSpectra, Option<SaturationStats>)>>;
 #[cfg(not(feature = "lwa-na"))]
 type BackendReturn = Result<Receiver<AutoSpectra>>;
-impl App {
+impl<'a> App<'a> {
     pub fn new(refresh_rate: Duration, data_backend: TuiType) -> Self {
         let (filter_sender, filter_recv) = tokio::sync::mpsc::channel(10);
 
@@ -261,6 +509,7 @@ impl App {
             saturations: None,
             #[cfg(feature = "lwa-na")]
             show_stats: false,
+            ylims: Ylims::new(),
         }
     }
 
@@ -289,7 +538,10 @@ impl App {
             }
         }
 
-        frame.render_widget(ui::draw_charts(self.spectra.as_ref()), chunks[1]);
+        frame.render_widget(
+            ui::draw_charts(self.spectra.as_ref(), &self.ylims),
+            chunks[1],
+        );
 
         cfg_if::cfg_if! {
             if #[cfg(feature="lwa-na")]{
@@ -380,6 +632,39 @@ impl App {
                 let area = ui::center_popup(chunks[1], Constraint::Length(20), Constraint::Max(20));
                 frame.render_widget(Clear, area); //this clears out the background
                 frame.render_stateful_widget(list, area, &mut self.antenna_filter.state);
+            }
+            InputMode::ChartLims => {
+                let outer_area =
+                    ui::center_popup(chunks[1], Constraint::Length(40), Constraint::Length(5));
+
+                //this clears out the background
+                frame.render_widget(Clear, outer_area);
+
+                let outter_block = Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(Color::LightCyan))
+                    .title("Set Y-limits (Tab to change focus)");
+
+                let area = outter_block.inner(outer_area);
+                frame.render_widget(outter_block, outer_area);
+
+                let text_chunks = self.ylims.layout.split(area);
+
+                for (textarea, chunk) in self.ylims.textareas.iter().zip(text_chunks.iter()) {
+                    frame.render_widget(textarea, *chunk);
+                }
+
+                // frame.render_widget(input, area);
+                // frame.set_cursor_position(Position::new(
+                //     // Draw the cursor at the current position in the input field.
+                //     // This position is can be controlled via the left and right arrow key
+                //     area.x + self.character_index as u16 + 1,
+                //     // Move one line down, from the border to the input line
+                //     area.y + 1,
+                // ));
+                // TODO
+                // Make a pop up
+                // allow text input for limit
             }
         }
     }
@@ -587,9 +872,13 @@ impl App {
                                     match action {
                                         Action::Break => break 'plotting_loop,
                                         #[cfg(feature = "ovro")]
-                                        Action::NewAnt => self.input_mode = InputMode::AntennaInput,
+                                        Action::NewAnt => {
+                                            debug!("Entering New Antenna mode.");
+                                            self.input_mode = InputMode::AntennaInput;
+                                        }
                                         #[cfg(feature = "ovro")]
                                         Action::DelAnt => {
+                                            debug!("Entering Delete antenna mode.");
                                             self.input_mode = InputMode::RemoveAntenna
                                         }
                                         Action::ToggleLog => {
@@ -600,6 +889,10 @@ impl App {
                                         }
                                         #[cfg(feature = "lwa-na")]
                                         Action::ToggleStats => self.show_stats = !self.show_stats,
+                                        Action::ChangeYLims => {
+                                            debug!("Entering Ylimit changing mode.");
+                                            self.input_mode = InputMode::ChartLims
+                                        }
                                     }
                                 }
                             }
@@ -635,6 +928,42 @@ impl App {
                             #[cfg(feature = "ovro")]
                             // ignore other inputs in delete ant mode
                             InputMode::RemoveAntenna => {}
+
+                            InputMode::ChartLims => {
+                                if event.kind == KeyEventKind::Press {
+                                    match event.code {
+                                        KeyCode::Tab => {
+                                            self.ylims.change_focus();
+                                            // switch focus between min and max boxes
+                                        }
+                                        KeyCode::Esc => {
+                                            // return to normal mode don't do anything
+                                            self.ylims.clear();
+                                            self.ylims.reset_blocks();
+
+                                            debug!("Returning to normal mode.");
+                                            self.input_mode = InputMode::Normal;
+                                        }
+                                        KeyCode::Enter if self.ylims.is_valid => {
+                                            self.ylims.update_vals(self.log_plot.unwrap_or(false));
+                                            self.ylims.reset_blocks();
+                                            debug!("Returning to normal mode.");
+
+                                            self.input_mode = InputMode::Normal;
+
+                                            // if valid input update the limits
+                                        }
+                                        _ => {
+                                            // if the input is accepted
+                                            // check validity.
+                                            // account for focused text box
+                                            if self.ylims.input(event) {
+                                                self.ylims.validate();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         },
                         // we are not interested in Focuses and mouse movements
                         Ok(_) => {}
