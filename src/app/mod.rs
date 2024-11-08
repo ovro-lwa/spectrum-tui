@@ -207,6 +207,11 @@ impl<'a> Ylims<'a> {
                 }
             })
         }
+        if self.min > self.max {
+            log::info!("Ymin > Ymax, swapping for your convenience.");
+            std::mem::swap(&mut self.min, &mut self.max);
+        }
+
         debug!("min: {:?}", self.min);
         debug!("max: {:?}", self.max);
     }
@@ -530,7 +535,19 @@ impl<'a> App<'a> {
             .split(size);
 
         // Title
-        frame.render_widget(ui::draw_title(), chunks[0]);
+        cfg_if::cfg_if! {
+            if #[cfg(feature="lwa-na")]{
+                let name = match &self.data_backend {
+                    TuiType::File { input_file, .. } => input_file.display().to_string(),
+                    TuiType::Live { data_recorder,..} => data_recorder.clone(),
+                };
+                frame.render_widget(ui::draw_title(name),  chunks[0]);
+
+            }else {
+
+                frame.render_widget(ui::draw_title(), chunks[0]);
+            }
+        }
 
         if let Some(log) = self.log_plot {
             if let Some(spec) = self.spectra.as_mut() {

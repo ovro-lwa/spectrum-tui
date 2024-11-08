@@ -11,8 +11,15 @@ use tui_logger::TuiLoggerWidget;
 
 use crate::{app::Ylims, loader::AutoSpectra, Action};
 
-pub(crate) fn draw_title<'a>() -> Paragraph<'a> {
-    Paragraph::new("Spectrum Tui!!")
+pub(crate) fn draw_title<'a, P: AsRef<str>>(#[cfg(feature = "lwa-na")] name: P) -> Paragraph<'a> {
+    cfg_if::cfg_if! {
+        if #[cfg(feature="lwa-na")]{
+            let text = format!("Spectrum Tui! {}", name.as_ref());
+        } else{
+            let text = "Spectrum Tui!!".to_owned();
+        }
+    }
+    Paragraph::new(text)
         .style(Style::default().fg(Color::LightCyan))
         .alignment(Alignment::Center)
         .block(
