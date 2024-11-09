@@ -827,7 +827,11 @@ impl DRLoader {
                 .and_then(|name| name.to_str().map(|x| x.to_owned()));
 
             if let Some(name) = &self.file_tag {
-                log::info!("Reading spectra from {name} on {}", self.data_recorder);
+                log::info!(
+                    "Reading spectra from {name} on {}. Full path: {}",
+                    self.data_recorder,
+                    path.display()
+                );
             }
         }
 
