@@ -165,9 +165,9 @@ enum TuiType {
         /// SSH identity file used to connect to the data recorder.
         identity_file: PathBuf,
 
-        #[clap(long, short, default_value_t = 30)]
+        #[clap(long, short, default_value_t = 30.0)]
         /// The interval in seconds at which to poll for new autos
-        delay: u64,
+        delay: f64,
     },
 }
 #[cfg(feature = "lwa-na")]
@@ -176,7 +176,7 @@ impl TuiType {
     pub(crate) fn data_rate(&self) -> f64 {
         match self {
             TuiType::File { .. } => 1.0,
-            TuiType::Live { delay, .. } => *delay as f64,
+            TuiType::Live { delay, .. } => *delay,
         }
     }
 }

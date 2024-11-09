@@ -776,7 +776,7 @@ impl<'a> App<'a> {
                     }
                 }
                 tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(delay));
+                    let mut interval = tokio::time::interval(Duration::from_secs_f64(delay));
 
                     cfg_if::cfg_if! {
                         if #[cfg(feature = "ovro")]{
